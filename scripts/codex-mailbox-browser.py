@@ -15,6 +15,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 MS_HOSTS = {'login.live.com', 'login.microsoftonline.com', 'account.live.com'}
 MAIL_HOSTS = {'outlook.live.com', 'outlook.office.com', 'outlook.office365.com'}
@@ -24,6 +25,46 @@ OTP_INPUT = 'input[autocomplete="one-time-code"]:visible, input[name="code"]:vis
 
 class FlowError(Exception):
     pass
+
+
+def browser_context_options(payload, environ=None):
+    """Slot config first, then this guest's environment; never the operator's browser."""
+    env = os.environ if environ is None else environ
+    slot = payload.get('slot_environment') or {}
+    raw_locale = str(slot.get('locale') or env.get('LC_ALL') or env.get('LC_MESSAGES') or env.get('LANG') or 'C').strip()
+    language = raw_locale.split('.', 1)[0].replace('_', '-')
+    # C/POSIX has no regional language. Use Chromium's English UI convention.
+    if language.upper() in {'C', 'POSIX'}:
+        language = 'en-US'
+    if not re.fullmatch(r'[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8})*', language):
+        raise FlowError('browser_locale_invalid')
+    zone = str(slot.get('timezone') or env.get('TZ') or '').strip().removeprefix(':')
+    if not zone:
+        try:
+            zone = Path('/etc/timezone').read_text().strip()
+        except OSError:
+            pass
+    if not zone:
+        try:
+            zone = str(Path('/etc/localtime').resolve()).split('/zoneinfo/', 1)[1]
+        except (OSError, IndexError):
+            pass
+    try:
+        ZoneInfo(zone)
+    except (ZoneInfoNotFoundError, ValueError):
+        raise FlowError('browser_timezone_invalid')
+    if slot.get('proxy_mode', 'slot_network') != 'slot_network':
+        raise FlowError('slot_egress_mismatch')
+    return {
+        'headless': True,
+        'viewport': {'width': 1365, 'height': 900},
+        'locale': language,
+        'timezone_id': zone,
+        # The selected slot's kin-eg-* network already routes TCP/DNS through
+        # its bound exit. A second browser/system proxy would change that path.
+        'args': ['--no-proxy-server', '--disable-quic', '--disable-dev-shm-usage',
+                 '--disable-background-networking', '--force-webrtc-ip-handling-policy=disable_non_proxied_udp'],
+    }
 
 
 def emit(stage, **data):
@@ -688,11 +729,9 @@ class BrowserLogin:
         profile.mkdir(parents=True, exist_ok=True, mode=0o700)
         os.chmod(profile, 0o700)
         os.environ.setdefault('PLAYWRIGHT_BROWSERS_PATH', str(runtime / 'browsers'))
+        options = browser_context_options(self.payload)
         with sync_playwright() as pw:
-            context = pw.chromium.launch_persistent_context(str(profile), headless=True,
-                viewport={'width': 1365, 'height': 900}, locale='en-US',
-                args=['--disable-quic', '--disable-dev-shm-usage', '--disable-background-networking',
-                      '--force-webrtc-ip-handling-policy=disable_non_proxied_udp'])
+            context = pw.chromium.launch_persistent_context(str(profile), **options)
             context.set_default_timeout(8000)
             try:
                 self.context = context

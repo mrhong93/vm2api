@@ -7,6 +7,7 @@ import {
   stagePortableMailboxRuntime,
   MAILBOX_BOOTSTRAP,
   SLOT_SUPERVISOR,
+  assertMailboxSlotNetwork,
 } from '../../src/lib/oauth/codex-mailbox-runtime.mjs'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -83,6 +84,86 @@ test('abort forwards a cancel message to the supervisor inside slot', async () =
   )
   assert.equal(mock.calls.at(-1).job.cancel, true)
   assert.match(SLOT_SUPERVISOR, /os\.killpg/)
+})
+
+test('browser jobs take language and timezone only from the selected Docker or KVM slot', async () => {
+  for (const type of ['docker', 'kvm']) {
+    for (const action of ['login', 'remote']) {
+      const mock = fakeDocker((_job, child) =>
+        queueMicrotask(() => {
+          child.stdout.write('{"event":"callback","callback_url":"http://localhost:1455/auth/callback?code=fixture"}\n')
+          child.emit('close', 0)
+        }),
+      )
+      await runMailboxSlotProcess({
+        projectRoot: process.cwd(),
+        vm: {
+          id: 'vm-02',
+          runtime: { type },
+          locale: 'ja_JP.UTF-8',
+          timezone: 'Asia/Tokyo',
+          fingerprint: { locale: 'en_US.UTF-8', timezone: 'America/New_York' },
+        },
+        action,
+        payload: { slot_environment: { locale: 'zh_CN.UTF-8', timezone: 'Asia/Shanghai', proxy_mode: 'other' } },
+        ...mock,
+      })
+      const { argv, job } = mock.calls[0]
+      assert.deepEqual(job.payload.slot_environment, {
+        locale: 'ja_JP.UTF-8',
+        timezone: 'Asia/Tokyo',
+        proxy_mode: 'slot_network',
+      })
+      assert.ok(argv.includes('kin-02'))
+      assert.equal(argv.includes('/usr/local/bin/kin-guest-exec'), type === 'kvm')
+      assert.ok(!argv.some((arg) => /proxy-server|Asia\/|UTF-8/.test(arg)))
+    }
+  }
+})
+
+test('legacy slot identity stays per-slot and missing fields are left for in-guest resolution', async () => {
+  for (const [vm, expected] of [
+    [
+      { id: 'vm-01', fingerprint: { locale: 'zh_CN.UTF-8', timezone: 'Asia/Shanghai' } },
+      { locale: 'zh_CN.UTF-8', timezone: 'Asia/Shanghai' },
+    ],
+    [{ id: 'vm-01' }, { locale: '', timezone: '' }],
+  ]) {
+    const mock = fakeDocker((_job, child) =>
+      queueMicrotask(() => {
+        child.stdout.write('{"event":"callback","callback_url":"fixture"}\n')
+        child.emit('close', 0)
+      }),
+    )
+    await runMailboxSlotProcess({ projectRoot: process.cwd(), vm, action: 'login', payload: {}, ...mock })
+    assert.deepEqual(mock.calls[0].job.payload.slot_environment, { ...expected, proxy_mode: 'slot_network' })
+  }
+})
+
+test('browser network gate requires the selected proxy bridge and fails closed for stopped or mismatched slots', async () => {
+  for (const proxy of [
+    { id: 'px-fixture', host: '127.0.0.1', port: 1080 },
+    { id: 'px-local', scheme: 'local' },
+  ]) {
+    const vm = { id: 'vm-02', proxy }
+    const expected = `kin-eg-${proxy.id}`
+    const inspect = async (_api, container) => {
+      assert.equal(container, 'kin-02')
+      return { State: { Running: true }, HostConfig: { NetworkMode: expected } }
+    }
+    await assertMailboxSlotNetwork(vm, { inspect })
+    for (const mode of ['host', 'bridge', 'kin-eg-another-account']) {
+      await assert.rejects(
+        assertMailboxSlotNetwork(vm, {
+          inspect: async () => ({ State: { Running: true }, HostConfig: { NetworkMode: mode } }),
+        }),
+        { code: 'slot_egress_mismatch' },
+      )
+    }
+    await assert.rejects(assertMailboxSlotNetwork(vm, { inspect: async () => ({ State: { Running: false } }) }), {
+      code: 'slot_not_running',
+    })
+  }
 })
 test('browser failure details are not returned to callers', async () => {
   const mock = fakeDocker((_job, child) =>
