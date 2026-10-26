@@ -70,7 +70,7 @@
 | POST | `/vms/:id/probe` | 槽 SOCKS5 探官方 `/usage` + Fable（Pro 跳过 Fable） |
 | POST | `/vms/:id/exit-probe` | 测这个槽真实出口的 IP 与地理（仅 admin）：SOCKS5 槽经代理查；本地代理槽查它所在 VPS 那条本地代理并刷新该行地理。未绑定 502 `proxy_required` |
 | POST | `/vms/schedule/hold` | kernel 升级排空：`{ reason? }` 默认 `kernel_update`。给当前 **可调度** 槽加维护暂停（`schedule_hold={reason:'maintenance', detail:{tag:reason}}`，受限，不改容器状态）；等待这些槽在途请求归零（最长约 120s）。成功 `{ paused, inflight: 0, drained: true }`。超时 409 `slots_busy`，**自动恢复** 本次 hold 的槽。调度关与不可调度的槽不受影响 |
-| POST | `/vms/schedule/resume` | 与 hold 配对：`{ reason? }` 默认 `kernel_update`。恢复 `schedule_disabled_reason` 等于该 reason 的槽为可调度；返回 `{ restored }`。`deploy/install.sh upgrade` 在 kernel 同步后调用 |
+| POST | `/vms/schedule/resume` | 与 hold 配对：`{ reason? }` 默认 `kernel_update`。仅解除 `schedule_hold.reason=maintenance` 且 `detail.tag` 匹配该 reason 的暂停；保留人工关闭和不可调度故障，返回 `{ restored }`。`deploy/install.sh upgrade` 在 kernel 同步后调用 |
 | POST | `/vms/:id/schedulable` | 操作员开关 `{ schedulable }`，不改容器。`false` = 调度关；`true` = 调度开，同时清除不可调度。凭证已失效或吊销时开启返回 409 `credential_unavailable`（先重新导入凭证） |
 | POST | `/vms/:id/cooldown/clear` | 清账号/模型冷却、粘性钉和 `/usage` 429 旗标；GPT 槽同时清除可恢复的 `codex.extra.codex_limited_until`，再重算调度，重新入池 |
 | POST | `/vms/:id/test-chat` | loopback `POST /v1/messages`，master 可钉槽；官方 CC 入站 + 4 块 system。默认 prompt `hello` |

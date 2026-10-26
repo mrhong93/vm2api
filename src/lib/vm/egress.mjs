@@ -598,7 +598,9 @@ export async function startEgressProcess({
     } catch {}
   }
   const portOwner = listenerPid(tcpPort)
-  if (portOwner && !ownsEgressProcess(portOwner, cfgPath)) {
+  // A replaced executable still owns its listener and must be stopped before
+  // launching the new file. This check authorizes retirement, not reuse.
+  if (portOwner && !ownsEgressProcess(portOwner, cfgPath, { allowDeleted: true })) {
     return { ok: false, error: 'egress_port_busy', pid: portOwner }
   }
   const superseded = [
