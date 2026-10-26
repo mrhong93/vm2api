@@ -24,7 +24,9 @@ if (args[0] === 'compose') {
 } else if (args[0] === 'inspect') {
   console.log(process.env.SAME_CONTAINER === '1' ? 'old-id' : 'new-id')
 } else if (args[0] === 'exec') {
-  const result = spawnSync(process.execPath, args.slice(3), { stdio: 'inherit' })
+  const cmd = args.slice(3)
+  if (cmd.some((part) => String(part).includes('fleet-services.mjs'))) process.exit(0)
+  const result = spawnSync(process.execPath, cmd, { stdio: 'inherit' })
   process.exit(result.status ?? 1)
 } else { process.exit(2) }
 `
@@ -86,7 +88,10 @@ async function runUpgrade({ source = true, arch = 'amd64', override, env = {} } 
     fs.writeFileSync(path.join(bin, 'sleep'), '#!/bin/sh\nexit 0\n', { mode: 0o755 })
     fs.writeFileSync(path.join(root, 'VERSION'), '1.2.6\n')
     fs.writeFileSync(bootVersion, 'v1.2.6')
-    fs.writeFileSync(path.join(root, '.env'), 'VM2API_ADMIN_PASSWORD=keep-me\nVM2API_IMAGE_TAG=v1.2.6\n')
+    fs.writeFileSync(
+      path.join(root, '.env'),
+      'VM2API_ADMIN_PASSWORD=keep-me\nVM2API_IMAGE=ghcr.io/dofastted/vm2api\nVM2API_IMAGE_TAG=v1.2.6\n',
+    )
     fs.mkdirSync(path.join(root, 'src/config'), { recursive: true })
     fs.writeFileSync(path.join(root, 'src/config/routing.json'), 'operator config\n')
     if (source) fs.mkdirSync(path.join(root, '.git'))
@@ -208,6 +213,8 @@ test('image upgrade pulls the pinned ARM64 release and records VERSION only afte
   const result = await runUpgrade({ source: false, arch: 'arm64' })
   assert.equal(result.code, 0, result.stderr)
   assert.match(result.env, /VM2API_IMAGE_TAG=v1\.2\.7-arm64/)
+  assert.match(result.env, /^VM2API_IMAGE=ghcr\.io\/zhang2580384\/vm2api$/m)
+  assert.doesNotMatch(result.env, /^VM2API_IMAGE=ghcr\.io\/dofastted\//m)
   assert.match(result.env, /VM2API_ADMIN_PASSWORD=keep-me/)
   assert.ok(result.calls.some((args) => args.includes('pull')))
   assert.ok(!result.calls.some((args) => args.includes('build')))

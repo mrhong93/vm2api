@@ -1,0 +1,54 @@
+# 自维护发行版
+
+本仓库为 `zhang2580384/vm2api`，首个独立发行版为 **v2.0.0**，上游基线为 `dofastted/vm2api` 的 **v1.3.226**（`7cd52501c03c03e36493c38e39edc349de7d0c99`）。保留上游版权及 LICENSE。
+
+## 维护和发布规则
+
+- `main` 为经过 CI 验证的稳定源码；修复和功能使用分支及 PR 合并，不强制覆盖历史。
+- `origin` 指向本仓库，`upstream` 指向 `https://github.com/dofastted/vm2api.git`。同步上游前先评估，选择发布基线或独立提交，避免不经验证直接覆盖自有补丁。
+- 版本采用三段数字：修复递增补丁号（2.0.1），新增功能递增次版本（2.1.0），不兼容改动递增主版本。上游基线独立记录，不与本仓库版本号混用。
+- 发布时同步 `VERSION`、`CHANGELOG.md`、`.env.example` 默认镜像标签、`docs/releases/vX.Y.Z.md`，以及版本接口中的上游基线（基线改变时）。Git 标签必须是 `v` 加 VERSION。
+- 先合并通过 CI 的 PR，再创建发布标签。release 工作流重新执行验证；二进制附件和镜像全部成功后才公开 Release。不要移动已发布标签；发布错误用下一个补丁版本纠正。
+- 发布会生成 `ghcr.io/zhang2580384/vm2api:vX.Y.Z` 多架构镜像，并生成 amd64/arm64 标签。生产优先固定版本或摘要，不跟随 `edge`。
+- 控制面“检查更新”、升级脚本、前端仓库入口及默认镜像均指向本仓库。槽位 OS 镜像保持兼容的上游来源；CLI/kernel payload 独立固定在 `deploy/payload.json`，带尺寸和 SHA-256 校验，不能全局替换仓库地址。
+- 发布产物成功不等于生产验收。生产部署另行安排，保留原镜像摘要、Compose、override 及数据备份；分别检查本地健康、公共 HTTPS、账号池和实际业务。禁止把服务器 `.env`、账号、数据库或浏览器 profiles 提交到仓库。
+
+## v2.0.0 补丁来源
+
+| 改动 | 来源及处理 |
+| --- | --- |
+| GPT 等待队列按账号唤醒 | 上游 PR [#665](https://github.com/dofastted/vm2api/pull/665)，提交 `d994ef0148e4b165e51300595fe46039436c368f`，保留作者和原始改动 |
+| 设置改变后的有界唤醒 | 本仓库追加修复：一次广播仅重新检查当时等待的请求，未获取座位不继续传递无账号唤醒；包含满载、增加并发回归测试 |
+| 账号密码导入和槽位登录 | 从 [ohno1007 的提交](https://github.com/ohno1007/vm2api/commit/f6512155fe3d6230c4178c4f262408b44f211f06) 提取账号池、加密存储、绑定、密码/TOTP/微软邮箱登录及人工验证码接管；保留来源和作者署名 |
+| IPv6 地理位置 | 原自有补丁 `d54e2c2` 的生产代码及测试已经包含在 v1.3.226 基线中，无须重复应用；保留 `KIN_PROXY_GEO_V6_LOOKUP_MODE=control-plane` 配置兼容性 |
+
+ohno1007 的原提交还包含协议、计费、模型指纹、订阅管理等改动；本版不引入这些无关功能。登录辅助模块保留原有内部支持代码，但不开放订阅付费管理或 Session 导出接口。
+
+## 账号密码导入
+
+在导航“账号池”中导入，每批 1–100 个账号：
+
+```text
+fixture@outlook.com---mailbox-fixture-password
+fixture@example.com----gpt-fixture-password----JBSWY3DPEHPK3PXP
+```
+
+两列为微软邮箱登录，三列为 GPT 密码和 TOTP；支持原始 TOTP 密钥、otpauth URI 或 `https://2fa.run/2fa/<密钥>`，链接只在本地解析，不访问第三方取得验证码。示例均为虚构凭据。
+
+导入和绑定不会启动浏览器。选择槽位并明确点击“登录”后才开始授权；首次成功前不自动重新登录。保存的数据使用现有数据库密钥加密，列表不返回密码或 TOTP。设置数据库密钥是必需的，不能通过关闭加密来导入。租户只能查看和使用自己的凭据、操作自己的槽位；只管理调度的 super 角色没有凭据操作权限。
+
+登录需要槽位已启用调度并绑定可用出口。验证码或人工验证可通过该槽位的远程屏幕接管；不使用控制面网络代替槽位网络。首次启用空槽位需要明确点击登录，关闭调度的现有槽位不被自动开启。
+
+### 浏览器运行时前提
+
+“导入/保存/绑定”不依赖浏览器；实际登录需要 Playwright 1.64.1 和 Chromium。原贡献中的浏览器运行包不在 Git 内，**本版控制面镜像也不附带该大型运行包**。可写且有安装权限的槽位可通过原安装流程准备；只读根目录槽位需要预先提供匹配发行版/架构/Python ABI 的 portable 包。缺失时会返回 `browser_runtime_unavailable`，不会关闭只读限制或重建槽位。
+
+提供的 `scripts/build-mailbox-portable.py` 针对 Ubuntu 24.04 amd64、Python 3.12 构建环境：预装 `/opt/kin-mailbox/venv`、Playwright 1.64.1、`/opt/kin-mailbox/browsers` 的 Chromium 及系统依赖后，以 root 执行并将标准输出保存为 tar.gz。源码不包含账号或 profile。
+
+将包放入控制面项目的 `share/kin-mailbox-runtime/ubuntu24.04-amd64.tar.gz`，同目录 `manifest.json` 包含 `version: "1.64.1"` 和真实 `sha256`。包将校验后放入槽位原有可写 home，保留 profiles。不要把 Ubuntu 包部署到 Debian 槽位；远程主机也需要分别准备对应运行时。
+
+## 首次从官方版本切换
+
+官方 1.x 的更新按钮仍查询官方仓库，不能靠它自动发现本仓库的 2.x。首次部署必须明确切换控制面镜像到 `ghcr.io/zhang2580384/vm2api:v2.0.0`，保留现有 Compose override、环境变量、端口和数据挂载。此后 2.x 的更新按钮才使用本仓库 Release 和镜像。
+
+原环境显式设置的 `VM2API_IMAGE` 也应切换。自有更新脚本会对齐镜像仓库，避免只改 tag 后拉取不存在的官方 2.x 镜像。挂载的 IPv6 补丁应先比对内容，再决定是否移除；不要直接删除 override。

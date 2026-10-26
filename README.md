@@ -2,10 +2,12 @@
 
 # vm2api
 
+自维护发行版 **v2.0.0**，基于上游 **v1.3.226**。更新源及镜像使用 `zhang2580384/vm2api`；维护规则和补丁来源见 [维护说明](docs/MAINTENANCE.md)。
+
 ### 完全隔离的虚拟机级 AI 订阅转 API 生产网关
 **Next-Generation Fully Isolated VM-Level AI Subscription-to-API Gateway**
 
-[![Release](https://img.shields.io/badge/Release-v1.3.133-blue.svg?style=for-the-badge&logo=github)](https://github.com/dofastted/vm2api/releases)
+[![Release](https://img.shields.io/badge/Release-v2.0.0-blue.svg?style=for-the-badge&logo=github)](https://github.com/zhang2580384/vm2api/releases)
 [![License](https://img.shields.io/badge/License-Noncommercial-amber.svg?style=for-the-badge)](LICENSE)
 [![Benchmarks](https://img.shields.io/badge/Benchmarks-Clean%20Verified-00C853?style=for-the-badge&logo=shield)](docs/benchmarks/README.md)
 [![Cluster](https://img.shields.io/badge/Cluster-Multi--VPS%20Ready-7928CA?style=for-the-badge&logo=docker)](docs/DEPLOY.md)
@@ -23,6 +25,12 @@
 ---
 
 <img src="docs/images/brand-hero.png" alt="vm2api Hero Banner" width="100%" style="border-radius: 12px; box-shadow: 0 8px 32px rgba(0,0,0,0.4);" />
+
+<br/>
+
+<a href="https://proxylane.dev/zh-cn/isp-proxies?utm_source=vm2api&utm_medium=affiliate&utm_campaign=vm2api_sponsor_202610&utm_content=github_readme"><img src="docs/images/sponsor-proxylane.png" alt="ProxyLane（赞助商）" width="100%" /></a>
+
+**赞助商**：[ProxyLane](https://proxylane.dev/zh-cn/isp-proxies?utm_source=vm2api&utm_medium=affiliate&utm_campaign=vm2api_sponsor_202610&utm_content=github_readme) AI 账号专用的原生静态住宅 IP，Scamalytics 低欺诈评分，每个 IP 独享，不限流量，$3.90 起。一个槽位绑一个 IP：把 SOCKS5 `host:port:user:pass` 粘贴到「代理池」→「添加代理」即可。首次购买使用优惠码 `VM2API30` 享 7 折。
 
 </div>
 
@@ -186,10 +194,10 @@ vm2api 严格遵循行业最严苛的**纯净度基准**。入站请求不泄露
 
 ```bash
 # 生产环境一键拉取并安装
-curl -sSL https://raw.githubusercontent.com/dofastted/vm2api/main/deploy/install.sh | sudo bash
+curl -sSL https://raw.githubusercontent.com/zhang2580384/vm2api/main/deploy/install.sh | sudo bash
 
 # 以后更新
-curl -sSL https://raw.githubusercontent.com/dofastted/vm2api/main/deploy/install.sh | sudo bash -s -- upgrade
+curl -sSL https://raw.githubusercontent.com/zhang2580384/vm2api/main/deploy/install.sh | sudo bash -s -- upgrade
 ```
 
 ARM64（aarch64）主机用同一条命令，脚本自动选择 `-arm64` 控制面镜像并准备 QEMU；实验性支持，见 [docs/ARM64.md](docs/ARM64.md)。
@@ -198,8 +206,8 @@ ARM64（aarch64）主机用同一条命令，脚本自动选择 `-arm64` 控制�
 
 ```bash
 mkdir -p /opt/vm2api && cd /opt/vm2api
-curl -sSLO https://raw.githubusercontent.com/dofastted/vm2api/main/docker-compose.yml
-curl -sSL -o .env https://raw.githubusercontent.com/dofastted/vm2api/main/.env.example
+curl -sSLO https://raw.githubusercontent.com/zhang2580384/vm2api/main/docker-compose.yml
+curl -sSL -o .env https://raw.githubusercontent.com/zhang2580384/vm2api/main/.env.example
 chmod 600 .env
 
 # 按需修改 .env 中的关键变量（VM2API_API_KEY, VM2API_ADMIN_PASSWORD, VM2API_DB_SECRET）
@@ -245,6 +253,8 @@ vm2api 内置全栈自适应网关，原生支持以下所有主流生态：
 <br/>
 
 # 🇬🇧 English
+
+> **Sponsor**: [ProxyLane](https://proxylane.dev/zh-cn/isp-proxies?utm_source=vm2api&utm_medium=affiliate&utm_campaign=vm2api_sponsor_202610&utm_content=github_readme_en) native static residential ISP IPs built for AI accounts: low Scamalytics fraud scores, a dedicated IP with unlimited traffic, from $3.90. Bind one IP per slot: paste the SOCKS5 line `host:port:user:pass` into 代理池 → 添加代理 (Proxy pool → Add proxy). Code `VM2API30` gives 30% off your first purchase.
 
 ## Table of Contents
 - [💡 Overview](#-overview)
@@ -371,7 +381,7 @@ Open a hit and read the body. A false positive means tighten that gate, not dele
 
 ```bash
 # Recommended one-line installation on Ubuntu 24.04 LTS
-curl -sSL https://raw.githubusercontent.com/dofastted/vm2api/main/deploy/install.sh | sudo bash
+curl -sSL https://raw.githubusercontent.com/zhang2580384/vm2api/main/deploy/install.sh | sudo bash
 ```
 
 After deployment, access:
@@ -383,7 +393,7 @@ After deployment, access:
 
 ## 🐞 问题反馈 / Issue Reporting
 
-提交 Issue 前请阅读 [ISSUE_GUIDE.md](ISSUE_GUIDE.md)，按“版本 → 复现路线 → 环境（VPS / 代理）→ VM 与请求日志 → 源码定位（可选）→ 脱敏”收集信息，再用 [Bug 报告表单](https://github.com/dofastted/vm2api/issues/new/choose) 提交。
+提交 Issue 前请阅读 [ISSUE_GUIDE.md](ISSUE_GUIDE.md)，按“版本 → 复现路线 → 环境（VPS / 代理）→ VM 与请求日志 → 源码定位（可选）→ 脱敏”收集信息，再用 [Bug 报告表单](https://github.com/zhang2580384/vm2api/issues/new/choose) 提交。
 
 Before opening an issue, follow [ISSUE_GUIDE.md](ISSUE_GUIDE.md): version, reproduction steps, host/proxy environment, VM and request logs, optional source pointers — and redact all secrets.
 
@@ -420,7 +430,7 @@ Before opening an issue, follow [ISSUE_GUIDE.md](ISSUE_GUIDE.md): version, repro
 
 ## 📈 Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=dofastted/vm2api&type=Date)](https://star-history.com/#dofastted/vm2api&Date)
+[![Star History Chart](https://api.star-history.com/svg?repos=zhang2580384/vm2api&type=Date)](https://star-history.com/#zhang2580384/vm2api&Date)
 
 ---
 

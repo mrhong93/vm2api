@@ -30,7 +30,10 @@ import { slotExecContainer } from './slot-exec.mjs'
 import { slotHost } from './slot-host.mjs'
 import { slotExec, startSlotReady, stopSlot } from './slot-runtime.mjs'
 import { isCodexVm } from './vm-kind.mjs'
+import { isKvmRuntime } from './runtime-kind.mjs'
+import { slotDockerCpus } from './machine-spec.mjs'
 import { bindVmProxy, getVm, patchVmRecord, vmHasSchedulableCredential } from './vm-registry.mjs'
+import { isCredentialRefreshFailed } from '../pool/availability.mjs'
 
 const HEALTH_TIMEOUT_MS = 1500
 const BRIDGE_HEAL_MIN_MS = 60_000
@@ -88,7 +91,9 @@ function logTail(logs) {
  * A down container carries its last log lines, which usually name the cause.
  */
 export async function inspectSlotContainer(vm) {
-  const connect = slotHost(vm).dockerApi()
+  const host = slotHost(vm)
+  if (typeof host.inspect === 'function') return host.inspect(vm)
+  const connect = host.dockerApi()
   const name = slotExecContainer(vm)
   const info = await inspectContainerOrNull(connect, name)
   if (!info) return { exists: false, running: false }
@@ -134,7 +139,14 @@ function recordCheck(vm) {
 
 function credentialCheck(vm, projectRoot) {
   if (vmHasSchedulableCredential(vm, projectRoot)) return check('credential', '凭证', 'ok', null, '已导入可用凭证')
-  return check('credential', '凭证', 'error', 'no_credential', '未导入可用凭证，内核不会启动，测试对话必然失败')
+  const refreshFailed = isCredentialRefreshFailed({ vm, now: Date.now() })
+  return check(
+    'credential',
+    '凭证',
+    'error',
+    refreshFailed ? 'credential_refresh_failed' : 'no_credential',
+    refreshFailed ? '凭证已失效且刷新失败；请重新登录 / 导入凭证' : '未导入可用凭证；请登录 / 导入凭证',
+  )
 }
 
 function linkCheck(status, internal) {
@@ -353,6 +365,11 @@ export async function diagnoseSlotServices(
 export async function powerOnSlot({ projectRoot, id, proxyPool, routing = {}, fillTimezone = null, ops = {} }) {
   let vm = getVm(projectRoot, id)
   if (!vm) return { ok: false, status: 404, code: 'vm_not_found', error: 'vm not found' }
+  try {
+    if (!isKvmRuntime(vm)) slotDockerCpus(vm)
+  } catch (error) {
+    return { ok: false, status: 400, code: error.code, error: error.message }
+  }
   const bound = proxyPool.ensureBoundToVm(id, vm.proxy?.id || null)
   if (!bound) {
     return { ok: false, status: 409, code: 'proxy_required', error: 'No SOCKS5 is bound or free for this VM' }
@@ -442,6 +459,12 @@ export async function recoverSlot({
   if (!vm) return { ok: false, status: 404, code: 'vm_not_found', error: 'vm not found' }
   if (recovering.has(id))
     return { ok: false, status: 409, code: 'recover_in_progress', error: '该槽位正在恢复中，请稍候' }
+  // Validate before holding the watchdog, repairing relays or stopping a live slot.
+  try {
+    if (!isKvmRuntime(vm)) slotDockerCpus(vm)
+  } catch (error) {
+    return { ok: false, status: 400, code: error.code, error: error.message }
+  }
   const manager = (ops.cluster || cluster)()
   const stop = ops.stopSlot || stopSlot
   const powerOn = ops.powerOn || ((args) => powerOnSlot(args))
@@ -624,7 +647,7 @@ export function createSlotBridgeHealer({
       if (seenProxies.has(proxy.id)) continue
       seenProxies.add(proxy.id)
       if (egressAlive(proxy.id) || !due(`egress:${proxy.id}`)) continue
-      const result = startEgress(proxy)
+      const result = await startEgress(proxy)
       if (result?.ok) logger.warn(`[bridge-heal] kin-egress ${proxy.id} was down; restarted`)
       else logger.warn(`[bridge-heal] kin-egress ${proxy.id} restart failed: ${result?.error || 'unknown'}`)
     }

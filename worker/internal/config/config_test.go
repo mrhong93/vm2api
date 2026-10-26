@@ -113,3 +113,73 @@ func TestLoadTelemetryKeepsEnvBetasAndSource(t *testing.T) {
 		t.Fatalf("headers=%v", tel.Headers)
 	}
 }
+
+func TestLoadTelemetryAcceptsOldHardwareFields(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "worker.json")
+	raw := `{
+  "vm_id": "",
+  "proxy_url": "",
+  "telemetry": {
+    "enabled": true,
+    "identity": {
+      "device_id": "dev",
+      "cpu_model": "Intel(R) Xeon(R) CPU",
+      "cpu_cores": 4,
+      "memory_bytes": 4294967296,
+      "mac": "52:54:00:11:22:33",
+      "dmi_manufacturer": "Dell Inc.",
+      "env": {
+        "platform": "linux",
+        "cpu_model": "Intel(R) Xeon(R) CPU",
+        "cpu_cores": 4,
+        "memory_bytes": 4294967296,
+        "root_disk": "/dev/vda2",
+        "mac": "52:54:00:11:22:33",
+        "dmi_product": "OptiPlex 7090"
+      }
+    }
+  }
+}`
+	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tel, err := LoadTelemetry(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Older worker.json still loads; the sender drops the hardware keys.
+	if !tel.Enabled || tel.Identity.DeviceID != "dev" || tel.Identity.Env["platform"] != "linux" {
+		t.Fatalf("telemetry=%+v", tel)
+	}
+}
+
+func TestLoadTelemetryUploadIntervalSeconds(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "worker.json")
+	if err := os.WriteFile(path, []byte(`{"telemetry":{"enabled":true,"upload_interval_seconds":120}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tel, err := LoadTelemetry(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tel.UploadIntervalSecs != 120 {
+		t.Fatalf("UploadIntervalSecs=%d", tel.UploadIntervalSecs)
+	}
+}
+
+func TestLoadTelemetryMissingUploadIntervalIsZero(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "worker.json")
+	if err := os.WriteFile(path, []byte(`{"telemetry":{"enabled":true}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tel, err := LoadTelemetry(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tel.UploadIntervalSecs != 0 {
+		t.Fatalf("UploadIntervalSecs=%d", tel.UploadIntervalSecs)
+	}
+}

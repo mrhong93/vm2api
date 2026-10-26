@@ -9,7 +9,11 @@ import {
   fromClaudeToResponses,
 } from '../../src/lib/protocol/convert.mjs'
 import { applyCrsIdentityReplace, uuidFromSeed } from '../../src/lib/identity/identity-rewrite.mjs'
-import { applyCrsUnofficialPersona, CRS_OFFICIAL_SYSTEM } from '../../src/lib/identity/crs-persona.mjs'
+import {
+  applyCrsUnofficialPersona,
+  CRS_OFFICIAL_CLI_SYSTEM,
+  CRS_OFFICIAL_SYSTEM,
+} from '../../src/lib/identity/crs-persona.mjs'
 import { hidePersonaUsage, personaHideInputTokens } from '../../src/lib/identity/crs-persona-usage.mjs'
 import {
   TEST14_FEATURES,
@@ -231,7 +235,7 @@ test('OpenAI chat unofficial rewrite is official 4-block plus caller --system ap
     max_tokens: 16,
   })
   assert.deepEqual(claude.stop_sequences, ['END'])
-  const cleaned = applyCrsUnofficialPersona(claude, { officialClient: false })
+  const cleaned = applyCrsUnofficialPersona(claude, { officialClient: false, park: true })
   assert.equal(cleaned.system.length, 5)
   assert.equal(cleaned.system[1].text, CRS_OFFICIAL_SYSTEM)
   assert.equal(cleaned.system[4].text, 'you are a linter')
@@ -258,7 +262,7 @@ test('Xcode unofficial system is appended after official 4 blocks', () => {
     system: 'You are currently in Xcode. Help with Swift.',
     messages: [{ role: 'user', content: 'hi' }],
   }
-  const out = applyCrsUnofficialPersona(body, { officialClient: false })
+  const out = applyCrsUnofficialPersona(body, { officialClient: false, park: true })
   assert.equal(out.system.length, 5)
   assert.equal(out.system[1].text, CRS_OFFICIAL_SYSTEM)
   assert.equal(out.system[4].text, 'You are currently in Xcode. Help with Swift.')

@@ -29,6 +29,7 @@ export type ReleaseStatus = {
   upgrade_command: string
   check_command: string
   repo: string
+  upstream_base?: string
   source_error?: string | null
   started?: boolean
   target?: string
@@ -116,5 +117,22 @@ export function healthProbeQueryOptions() {
     queryKey: ['panel', 'health-probe'] as const,
     queryFn: () => api<HealthProbePayload>('/api/panel/health-probe'),
     refetchInterval: 30_000,
+  })
+}
+
+/** `GET /api/panel/outbound-profile` → `src/lib/admin/outbound-profile.mjs`. */
+export type OutboundProfile = {
+  preset: string
+  cli_version: string
+  user_agent: string
+  anthropic_beta: string
+  beta_sample_model: string
+}
+
+export function outboundProfileQueryOptions() {
+  return queryOptions({
+    queryKey: ['panel', 'outbound-profile'] as const,
+    queryFn: () =>
+      api<{ profile: OutboundProfile }>('/api/panel/outbound-profile'),
   })
 }

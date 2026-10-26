@@ -14,7 +14,13 @@ import {
   ensureUnofficialEffortHigh,
   downgradeUngatedThinkingDisplay,
 } from './thinking.mjs'
-import { applyMaxTokensCap, applyModelRequestRules, getCapabilities } from './model-policy.mjs'
+import {
+  applyMaxTokensCap,
+  applyModelRequestRules,
+  getCapabilities,
+  isHaiku55Model,
+  isOpus55Model,
+} from './model-policy.mjs'
 import { ensureOutputConfigSchema, rectifyUnofficialRequest } from './request-rectifier.mjs'
 import { DEFAULT_CACHE_TTL, applyCacheBreakpoints, stripCacheScopeFields } from './cache-ttl.mjs'
 import { normalizeImageContentBlocks } from './images.mjs'
@@ -108,6 +114,43 @@ export function hasUsableThinkingSignature(signature) {
   if (!value || value.length < 24) return false
   return !DUMMY_THINKING_SIGNATURES.has(value)
 }
+function signedThinkingModel(model = '') {
+  if (isOpus55Model(model) || isHaiku55Model(model)) return true
+  const bare = String(model || '')
+    .split('[')[0]
+    .split('/')
+    .filter(Boolean)
+    .pop()
+  return /^claude-sonnet-5(?:-5|\.5)(?=-|$)/i.test(bare || '')
+}
+
+/** 5.5 accepts any non-dummy signature. Length is not a checksum. */
+function hasNonDummyThinkingSignature(signature) {
+  const value = String(signature || '').trim()
+  return value.length > 0 && !DUMMY_THINKING_SIGNATURES.has(value)
+}
+
+function dropSignedThinkingChain(messages) {
+  return messages.map((message) => {
+    if (!Array.isArray(message?.content)) return message
+    let dropped = false
+    const content = []
+    for (const block of message.content) {
+      const type = block?.type
+      if (
+        type === 'thinking' ||
+        type === 'redacted_thinking' ||
+        (type == null && block && Object.hasOwn(block, 'thinking'))
+      ) {
+        dropped = true
+        continue
+      }
+      content.push(block)
+    }
+    if (!dropped) return message
+    return { ...message, content }
+  })
+}
 
 function thinkingModeEnabled(body) {
   const type = String(body?.thinking?.type || '').toLowerCase()
@@ -127,11 +170,23 @@ export function alignSamplingWithThinking(body = {}) {
   return out
 }
 
-/** Drop history thinking blocks Anthropic would reject (empty / unsigned / dummy). */
+/**
+ * Drop history thinking blocks Anthropic would reject.
+ * Opus / Sonnet / Haiku 5.5 follow sub2api: one invalid block drops the whole
+ * signed chain, including later valid thinking and redacted_thinking. Turns
+ * left with no content are dropped. redacted_thinking stays when it carries
+ * data on 5.5, otherwise when its signature is usable. The preserve path
+ * (cli-hop first hop, default HTTP hop) skips the chain rule and keeps a
+ * signed block as-is, empty text and redacted_thinking included. A thinking
+ * block without a usable signature (missing, empty, shorter than 24, dummy)
+ * is dropped instead of forwarded with an empty signature.
+ */
 export function stripInvalidThinkingBlocks(body = {}, { preserveThinkingBlocks = false } = {}) {
   if (!Array.isArray(body.messages)) return body
   const keepSigned = thinkingModeEnabled(body)
+  const chainModel = !preserveThinkingBlocks && signedThinkingModel(body.model)
   let changed = false
+  let chainBroken = false
   const messages = body.messages.map((message) => {
     if (!Array.isArray(message?.content)) return message
     const content = []
@@ -142,39 +197,87 @@ export function stripInvalidThinkingBlocks(body = {}, { preserveThinkingBlocks =
         if ((keepSigned || preserveThinkingBlocks) && message.role === 'assistant') {
           // Omitted thinking keeps empty text; redacted thinking keeps encrypted data.
           if (preserveThinkingBlocks) {
-            if (type === 'thinking' && !Object.hasOwn(block, 'signature')) {
+            if (type === 'redacted_thinking' || hasUsableThinkingSignature(block.signature)) {
+              content.push(block)
+            } else {
               changed = true
               filteredThis = true
-              content.push({ ...block, signature: '' })
-            } else {
-              content.push(block)
             }
             continue
           }
-          if (type === 'redacted_thinking' && String(block.data || '').trim()) {
+          if (chainModel && chainBroken) {
+            changed = true
+            filteredThis = true
+            continue
+          }
+          if (type === 'redacted_thinking' && chainModel && String(block.data || '').trim()) {
             content.push(block)
             continue
           }
-          if (type === 'thinking' && hasUsableThinkingSignature(block.signature)) {
+          const signed = chainModel
+            ? hasNonDummyThinkingSignature(block.signature)
+            : hasUsableThinkingSignature(block.signature)
+          if (signed) {
             content.push(block)
             continue
           }
+          if (chainModel) chainBroken = true
         }
         changed = true
         filteredThis = true
+        continue
+      }
+      if (type == null && block && Object.hasOwn(block, 'thinking')) {
+        changed = true
+        filteredThis = true
+        if (chainModel) chainBroken = true
         continue
       }
       content.push(block)
     }
     return filteredThis ? { ...message, content } : message
   })
-  if (!changed) return dropEmptySystemControlTurns(body)
-  const withoutEmpty = messages.filter(
+  const stripped = chainBroken ? dropSignedThinkingChain(messages) : messages
+  if (!changed && !chainBroken) return dropEmptySystemControlTurns(body)
+  const withoutEmpty = stripped.filter(
     (message) => !anthropicContentIsEmpty(message?.content) || messageHasTurnControls(message),
   )
   return dropEmptySystemControlTurns({ ...body, messages: mergeConsecutiveAnthropicMessages(withoutEmpty) })
 }
 
+/**
+ * Rewrite history thinking / redacted_thinking blocks: `map(block, message)`
+ * returns the block to keep it, a replacement block, or null to drop it;
+ * every other block of the turn stays. A turn left empty goes and its
+ * neighbours merge. Returns the body unchanged when nothing changed.
+ * @returns {{ body: object, changed: number }}
+ */
+export function mapThinkingBlocks(body = {}, map = () => null) {
+  if (!Array.isArray(body?.messages)) return { body, changed: 0 }
+  let changed = 0
+  const messages = body.messages.map((message) => {
+    if (!Array.isArray(message?.content)) return message
+    let touched = false
+    const content = []
+    for (const block of message.content) {
+      const type = block?.type
+      const next = type === 'thinking' || type === 'redacted_thinking' ? map(block, message) : block
+      if (next === block) {
+        content.push(block)
+        continue
+      }
+      touched = true
+      changed += 1
+      if (next) content.push(next)
+    }
+    return touched ? { ...message, content } : message
+  })
+  if (!changed) return { body, changed }
+  const withoutEmpty = messages.filter(
+    (message) => !anthropicContentIsEmpty(message?.content) || messageHasTurnControls(message),
+  )
+  return { body: { ...body, messages: mergeConsecutiveAnthropicMessages(withoutEmpty) }, changed }
+}
 export const CONTEXT_MANAGEMENT_BETA = 'context-management-2025-06-27'
 export const PROMPT_CACHING_SCOPE_BETA = 'prompt-caching-scope-2026-01-05'
 export const MID_CONVERSATION_SYSTEM_BETA = 'mid-conversation-system-2026-04-07'

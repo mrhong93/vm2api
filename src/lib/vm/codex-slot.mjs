@@ -5,13 +5,23 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { atomicWriteJson, readJsonCached } from './vm-file.mjs'
 import { isCodexVm } from '../protocol/codex-route.mjs'
-import { buildCodexUsageView, extraToCodexSnapshot } from '../protocol/codex-usage.mjs'
-import { openaiIdentityFromOauthTokens } from '../oauth/openai-jwt.mjs'
+import { buildCodexUsageView, extraToCodexSnapshot, hasSpendableCodexCredits } from '../protocol/codex-usage.mjs'
+import { decodeJwtPayload, openaiClaimsFromIdToken, openaiIdentityFromOauthTokens } from '../oauth/openai-jwt.mjs'
 
 export { isCodexVm }
 
 export function codexCredentialPath(projectRoot, vmId) {
   return path.join(projectRoot, 'vms', vmId, 'codex-credentials.json')
+}
+
+export function codexAccessExpiresAt(account = {}) {
+  const raw = account.expires_at
+  const n = Number(raw)
+  if (Number.isFinite(n) && n > 0) return n < 10_000_000_000 ? n * 1000 : n
+  const iso = typeof raw === 'string' ? Date.parse(raw) : NaN
+  if (Number.isFinite(iso) && iso > 0) return iso
+  const exp = Number(decodeJwtPayload(account.access_token)?.exp)
+  return Number.isFinite(exp) && exp > 0 ? exp * 1000 : 0
 }
 
 export function readCodexAccounts(projectRoot, vmId) {
@@ -250,10 +260,23 @@ export function parseCodexImportPayload(body = {}) {
 
 export function enrichCodexAccountIdentity(account = {}) {
   const next = { ...account }
+  const idToken = firstString(next.id_token, next.idToken)
+  if (idToken) {
+    const idClaims = openaiClaimsFromIdToken(idToken)
+    if (idClaims.has_chatgpt_subscription_active_until) {
+      next.chatgpt_subscription_active_until = idClaims.chatgpt_subscription_active_until
+    }
+    if (idClaims.has_chatgpt_plan_type) {
+      next.chatgpt_plan_type = idClaims.chatgpt_plan_type
+    }
+  }
   const fromTokens = openaiIdentityFromOauthTokens(next)
   if (!firstString(next.email)) next.email = fromTokens.email || null
   if (!firstString(next.chatgpt_account_id)) {
     next.chatgpt_account_id = fromTokens.chatgpt_account_id || null
+  }
+  if (!idToken && !firstString(next.chatgpt_subscription_active_until)) {
+    next.chatgpt_subscription_active_until = fromTokens.chatgpt_subscription_active_until || null
   }
   return next
 }
@@ -261,6 +284,10 @@ export function enrichCodexAccountIdentity(account = {}) {
 export function upsertCodexAccount(projectRoot, vmId, patch = {}, { replaceCredentials = false } = {}) {
   const accounts = readCodexAccounts(projectRoot, vmId)
   const previous = { ...(accounts[0] || {}) }
+  if (replaceCredentials || patch.access_token || patch.refresh_token) {
+    delete previous.refresh_error
+    delete previous.refresh_error_at
+  }
   // Importing another account must not inherit the previous account's tokens or identity.
   // Refreshes still retain metadata when the provider omits it from the response.
   if (replaceCredentials) {
@@ -268,10 +295,13 @@ export function upsertCodexAccount(projectRoot, vmId, patch = {}, { replaceCrede
       'id',
       'email',
       'chatgpt_account_id',
+      'chatgpt_subscription_active_until',
+      'chatgpt_plan_type',
       'access_token',
       'refresh_token',
       'id_token',
       'expires_at',
+      'refreshed_at',
     ]) {
       delete previous[key]
     }
@@ -284,7 +314,7 @@ export function upsertCodexAccount(projectRoot, vmId, patch = {}, { replaceCrede
   return cur
 }
 
-export function persistCodexQuotaSnapshot(projectRoot, vmId, { extra, resetCredits, planType } = {}) {
+export function persistCodexQuotaSnapshot(projectRoot, vmId, { extra, resetCredits, credits, planType } = {}) {
   if (!projectRoot || !vmId) throw new Error('projectRoot and vmId required')
   const file = path.join(projectRoot, 'vms', `${vmId}.json`)
   let vm
@@ -298,6 +328,14 @@ export function persistCodexQuotaSnapshot(projectRoot, vmId, { extra, resetCredi
   if (extra && typeof extra === 'object') {
     vm.codex.extra = { ...(vm.codex.extra || {}), ...extra }
     vm.codex.usage = buildCodexUsageView(extraToCodexSnapshot(vm.codex.extra))
+  }
+  if (credits) {
+    vm.codex.credits = credits
+    // A fresh read that credits are spendable supersedes an older park; the next 429 parks again.
+    if (hasSpendableCodexCredits(vm) && vm.codex.extra?.codex_limited_until) {
+      vm.codex.extra = { ...vm.codex.extra }
+      delete vm.codex.extra.codex_limited_until
+    }
   }
   const plan = String(planType || '').trim()
   if (plan) vm.codex.plan_type = plan
@@ -331,11 +369,16 @@ export function summarizeCodexSlot(projectRoot, vm = {}) {
     has_token: hasAccess || hasRefresh,
     has_refresh: hasRefresh,
     email: first.email || vm.codex?.email || vm.email || null,
-    expires_at: first.expires_at || vm.codex?.expires_at || null,
+    expires_at: codexAccessExpiresAt(first) || vm.codex?.expires_at || null,
+    refreshed_at: first.refreshed_at || null,
+    refresh_error: first.refresh_error || null,
     chatgpt_account_id: first.chatgpt_account_id || vm.codex?.chatgpt_account_id || null,
+    chatgpt_subscription_active_until: first.chatgpt_subscription_active_until || null,
+    chatgpt_plan_type: first.chatgpt_plan_type || null,
     account_count: accounts.length,
     usage,
     reset_credits: vm.codex?.reset_credits || null,
+    credits: vm.codex?.credits || null,
     plan_type: vm.codex?.plan_type || null,
   }
 }

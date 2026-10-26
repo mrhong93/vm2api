@@ -68,6 +68,15 @@ test('empty GPT inventory is no_codex_vm', () => {
   assert.equal(picked.error, 'no_codex_vm')
 })
 
+test('expired GPT access is ready only while a refresh token exists', () => {
+  const now = Date.parse('2026-10-18T00:00:00.000Z')
+  const expired = Math.floor((now - 6 * 3600_000) / 1000)
+  const dead = gpt('vm-expired', { expires_at: expired, has_refresh: false })
+  const refreshable = gpt('vm-refreshable', { expires_at: expired, has_refresh: true })
+  assert.deepEqual(pickCodexSlots([dead], { now }).ids, [])
+  assert.deepEqual(pickCodexSlots([refreshable], { now }).ids, ['vm-refreshable'])
+})
+
 test('capped 5h window parks the slot', () => {
   const now = Date.parse('2026-09-17T00:00:00.000Z')
   assert.equal(
@@ -88,8 +97,31 @@ test('capped 5h window parks the slot', () => {
 test('429 and usage_limit_reached fail over; committed hops do not', () => {
   assert.equal(isCodexFailoverError({ ok: false, status: 429, committed: false }), true)
   assert.equal(isCodexFailoverError({ ok: false, status: 502, body: { error: { code: 'usage_limit_reached' } } }), true)
+  assert.equal(isCodexFailoverError({ ok: false, status: 500, body: { error: { code: 'server_error' } } }), true)
+  assert.equal(isCodexFailoverError({ ok: false, status: 502, body: { error: { code: 'provider_error' } } }), true)
+  assert.equal(
+    isCodexFailoverError({ ok: false, status: 400, body: { error: { code: 'invalid_request_error' } } }),
+    false,
+  )
+  assert.equal(isCodexFailoverError({ ok: false, transportError: true, status: 0 }), true)
   assert.equal(isCodexFailoverError({ ok: false, status: 429, committed: true }), false)
-  assert.equal(isCodexFailoverError({ ok: false, status: 502, body: { error: { code: 'upstream_transport' } } }), false)
+  assert.equal(isCodexFailoverError({ ok: false, status: 502, body: { error: { code: 'upstream_transport' } } }), true)
+  assert.equal(
+    isCodexFailoverError({
+      ok: false,
+      status: 403,
+      body: { error: { code: 'content_policy_violation', message: 'blocked' } },
+    }),
+    false,
+  )
+  assert.equal(
+    isCodexFailoverError({
+      ok: false,
+      status: 401,
+      body: { error: { code: 'invalid_request', message: 'token expired' } },
+    }),
+    true,
+  )
   assert.equal(
     isCodexFailoverError({ ok: false, status: 503, committed: false, body: { error: { code: 'server_error' } } }),
     true,
@@ -106,6 +138,21 @@ test('429 and usage_limit_reached fail over; committed hops do not', () => {
     }),
     false,
   )
+})
+
+test('a held GPT slot leaves the order and reports when it returns', async () => {
+  const rt = await import('../../src/lib/pool/openai-account-runtime.mjs')
+  rt.resetOpenAIAccountRuntime()
+  const now = Date.parse('2026-10-18T00:00:00.000Z')
+  rt.holdOpenAIAccount('vm-failed', { until: now + 60_000, reason: 'oauth_401', now })
+  const ordered = orderCodexSessionSlots([gpt('vm-failed'), gpt('vm-ok')], { now })
+  assert.deepEqual(ordered.ids, ['vm-ok'])
+  assert.equal(ordered.candidates.length, 1)
+  const allHeld = orderCodexSessionSlots([gpt('vm-failed')], { now })
+  assert.equal(allHeld.error, 'capacity_unavailable')
+  assert.equal(allHeld.retryAt, now + 60_000)
+  assert.equal(rt.openAIAccountHold('vm-failed', now + 60_001), null)
+  rt.resetOpenAIAccountRuntime()
 })
 
 test('spent 5h window evaluates to restriction, not 调度关', () => {
@@ -267,6 +314,49 @@ test('GPT wait queue wakes FIFO on release and caps at 100 waiters', async () =>
   ac.abort()
   assert.deepEqual(await aborted, { woken: false, aborted: true })
   assert.equal(rt.openAIWaiterCount(), 0)
+})
+
+test('GPT wait queue wakes the oldest waiter for the freed account', async () => {
+  const rt = await import('../../src/lib/pool/openai-account-runtime.mjs')
+  rt.resetOpenAIAccountRuntime()
+  const deadline = Date.now() + 5000
+  const order = []
+  const onlyB = rt.waitForOpenAICapacity({ deadline, accounts: ['vm-b'] }).then((r) => order.push(['b', r.accountId]))
+  const onlyA = rt.waitForOpenAICapacity({ deadline, accounts: ['vm-a'] }).then((r) => order.push(['a', r.accountId]))
+  rt.tryAcquireOpenAISlot('vm-a').release()
+  await onlyA
+  assert.deepEqual(order, [['a', 'vm-a']])
+  assert.equal(rt.openAIWaiterCount(), 1)
+  // No waiter takes vm-c: the release wakes nobody.
+  rt.tryAcquireOpenAISlot('vm-c').release()
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(rt.openAIWaiterCount(), 1)
+  // An unscoped wake (routing change) still reaches the oldest waiter.
+  rt.wakeOpenAIWaiter()
+  await onlyB
+  assert.deepEqual(order, [
+    ['a', 'vm-a'],
+    ['b', null],
+  ])
+  rt.resetOpenAIAccountRuntime()
+})
+
+test('GPT wait queue re-parks a woken waiter at the head past the cap', async () => {
+  const rt = await import('../../src/lib/pool/openai-account-runtime.mjs')
+  rt.resetOpenAIAccountRuntime()
+  const deadline = Date.now() + 5000
+  const parked = Array.from({ length: rt.OPENAI_MAX_WAITERS }, (_, i) =>
+    rt.waitForOpenAICapacity({ deadline }).then((r) => ({ i, ...r })),
+  )
+  await assert.rejects(rt.waitForOpenAICapacity({ deadline }), { code: 'pool_wait_queue_full' })
+  const again = rt
+    .waitForOpenAICapacity({ deadline, accounts: ['vm-a'], front: true })
+    .then((r) => ({ i: 'again', ...r }))
+  assert.equal(rt.openAIWaiterCount(), rt.OPENAI_MAX_WAITERS + 1)
+  rt.tryAcquireOpenAISlot('vm-a').release()
+  assert.deepEqual(await again, { i: 'again', woken: true, accountId: 'vm-a' })
+  rt.resetOpenAIAccountRuntime()
+  await Promise.all(parked)
 })
 
 test('RPM-only capacity miss reports when the window reopens', async () => {

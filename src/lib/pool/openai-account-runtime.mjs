@@ -14,6 +14,10 @@ export const OPENAI_MAX_WAITERS = 100
 const slots = new Map()
 const waiters = []
 const feedback = new Map()
+// Upstream failures park a GPT account for a short, process-local window.
+// This is deliberately not the operator switch, which must not be flipped by
+// a transient 401/429/5xx. The hold expires on its own.
+const holds = new Map()
 let roundRobinCursor = 0
 
 function slotOf(id) {
@@ -58,6 +62,34 @@ export function openAIRuntimeSnapshot(id, now = Date.now()) {
   return openAIRuntimeSignals(id, now)
 }
 
+/** Live failure hold for a GPT account, or null once it has expired. */
+export function openAIAccountHold(id, now = Date.now()) {
+  const key = String(id || '')
+  const hold = holds.get(key)
+  if (!hold) return null
+  if (hold.until <= now) {
+    holds.delete(key)
+    return null
+  }
+  return { until: hold.until, reason: hold.reason, set_at: hold.set_at }
+}
+
+/** Park an account after an uncommitted upstream failure. Longest live hold wins. */
+export function holdOpenAIAccount(id, { until, reason = 'upstream_error', now = Date.now() } = {}) {
+  const key = String(id || '')
+  const at = Number(until) || 0
+  if (!key || !(at > now)) return null
+  const current = holds.get(key)
+  if (current && current.until >= at) return { ...current }
+  const next = { until: at, reason: String(reason || 'upstream_error'), set_at: now }
+  holds.set(key, next)
+  return { ...next }
+}
+
+export function clearOpenAIAccountHold(id) {
+  holds.delete(String(id || ''))
+}
+
 export function readOpenAICursor() {
   return roundRobinCursor
 }
@@ -96,7 +128,7 @@ export function tryAcquireOpenAISlot(id, { concurrency = 1, maxRpm = 0, now = Da
       if (released) return
       released = true
       slot.inFlight = Math.max(0, slot.inFlight - 1)
-      wakeOpenAIWaiter()
+      wakeOpenAIWaiter(id)
     },
   }
 }
@@ -105,22 +137,37 @@ export function openAIWaiterCount() {
   return waiters.length
 }
 
-/** FIFO: one released seat wakes the oldest waiter. A woken waiter that still misses passes it on. */
-export function wakeOpenAIWaiter() {
-  const next = waiters.shift()
-  next?.wake()
+/**
+ * FIFO per account: a seat freed on `accountId` wakes the oldest waiter that
+ * can use that account (or that parked without an account set). Without an id
+ * the oldest waiter wakes, for changes that may open any account.
+ */
+export function wakeOpenAIWaiter(accountId = null) {
+  const key = accountId == null ? null : String(accountId)
+  const at = key == null ? 0 : waiters.findIndex((entry) => !entry.accounts || entry.accounts.has(key))
+  if (at < 0 || at >= waiters.length) return
+  const [next] = waiters.splice(at, 1)
+  next.wake(key)
+}
+
+/** A routing change rechecks each currently parked request once, without forwarding a wake token. */
+export function wakeAllOpenAIWaiters() {
+  for (const entry of waiters.splice(0)) entry.wake(null)
 }
 
 /**
  * Park until a seat frees, `deadline` passes, or `signal` aborts.
- * Resolves `{ woken }`; throws `pool_wait_queue_full` past OPENAI_MAX_WAITERS.
+ * `accounts` limits which releases wake this waiter; omit it to wake on any.
+ * `front` re-parks a woken waiter at the head of the queue; it was already
+ * counted, so it is not refused by the queue cap.
+ * Resolves `{ woken, accountId }`; throws `pool_wait_queue_full` past OPENAI_MAX_WAITERS.
  */
-export function waitForOpenAICapacity({ deadline, signal = null } = {}) {
-  if (waiters.length >= OPENAI_MAX_WAITERS) {
+export function waitForOpenAICapacity({ deadline, signal = null, accounts = null, front = false } = {}) {
+  if (!front && waiters.length >= OPENAI_MAX_WAITERS) {
     return Promise.reject(Object.assign(new Error('OpenAI pool wait queue is full'), { code: 'pool_wait_queue_full' }))
   }
   return new Promise((resolve) => {
-    const entry = {}
+    const entry = { accounts: accounts ? new Set(Array.from(accounts, String)) : null }
     const cleanup = () => {
       clearTimeout(timer)
       signal?.removeEventListener?.('abort', onAbort)
@@ -131,9 +178,9 @@ export function waitForOpenAICapacity({ deadline, signal = null } = {}) {
       cleanup()
       resolve({ woken: false, aborted: true })
     }
-    entry.wake = () => {
+    entry.wake = (accountId = null) => {
       cleanup()
-      resolve({ woken: true })
+      resolve({ woken: true, accountId })
     }
     const timer = setTimeout(
       () => {
@@ -143,7 +190,8 @@ export function waitForOpenAICapacity({ deadline, signal = null } = {}) {
       Math.max(1, Number(deadline) - Date.now()),
     )
     timer.unref?.()
-    waiters.push(entry)
+    if (front) waiters.unshift(entry)
+    else waiters.push(entry)
     if (signal?.aborted) onAbort()
     else signal?.addEventListener?.('abort', onAbort, { once: true })
   })
@@ -152,6 +200,7 @@ export function waitForOpenAICapacity({ deadline, signal = null } = {}) {
 export function reportOpenAIAttempt(id, kind, firstOutputMs = null, now = Date.now()) {
   const key = String(id || '')
   if (!key) return
+  if (kind === 'succeeded') holds.delete(key)
   const entry = feedback.get(key) || { value: 0, updatedAt: null, latency: null }
   const sample = kind === 'succeeded' ? 0 : 1
   const alpha = kind === 'capacity_rejected' ? CAPACITY_ALPHA : FAILURE_ALPHA
@@ -168,6 +217,7 @@ export function reportOpenAIAttempt(id, kind, firstOutputMs = null, now = Date.n
 export function resetOpenAIAccountRuntime() {
   slots.clear()
   feedback.clear()
+  holds.clear()
   for (const entry of waiters.splice(0)) entry.wake()
   roundRobinCursor = 0
 }

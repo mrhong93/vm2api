@@ -271,7 +271,38 @@ test('withRequestProtocolBetas derives mid-conversation-output-config from messa
   assert.deepEqual(withRequestProtocolBetas(['caller-beta'], { model: 'claude-sonnet-4-6' }), ['caller-beta'])
 })
 
-test('thinking strip keeps empty system effort controls on Opus 5.5', () => {
+test('thread create and continue derive the same output-config beta without replayed effort controls', () => {
+  const create = {
+    model: 'claude-opus-5-5',
+    output_config: { effort: 'high' },
+    thread: { type: 'create' },
+    messages: [
+      { role: 'user', content: 'go' },
+      { role: 'system', content: [], output_config: { effort: 'max' } },
+    ],
+  }
+  const resume = {
+    model: 'claude-opus-5-5',
+    output_config: { effort: 'high' },
+    thread: { type: 'continue', previous_message_id: 'msg_create' },
+    messages: [{ role: 'user', content: 'next' }],
+  }
+  const created = withRequestProtocolBetas(['caller-beta'], create)
+  assert.ok(created.includes(BETA_MID_CONVERSATION_OUTPUT_CONFIG))
+  const continued = withRequestProtocolBetas(['caller-beta'], resume)
+  assert.ok(continued.includes(BETA_MID_CONVERSATION_OUTPUT_CONFIG))
+  assert.ok(!continued.includes(BETA_MID_CONVERSATION_SYSTEM))
+  assert.ok(created.includes(BETA_MID_CONVERSATION_SYSTEM))
+  const { thread: _thread, ...plain } = resume
+  assert.ok(!withRequestProtocolBetas(['caller-beta'], plain).includes(BETA_MID_CONVERSATION_OUTPUT_CONFIG))
+  assert.ok(
+    !withRequestProtocolBetas([], { ...resume, model: 'claude-sonnet-5' }).includes(
+      BETA_MID_CONVERSATION_OUTPUT_CONFIG,
+    ),
+  )
+})
+
+test('thinking strip keeps empty system effort controls and a valid short signature on Opus 5.5', () => {
   const body = stripInvalidThinkingBlocks({
     model: 'claude-opus-5-5',
     thinking: { type: 'adaptive' },
@@ -287,7 +318,7 @@ test('thinking strip keeps empty system effort controls on Opus 5.5', () => {
   })
   assert.equal(
     body.messages.some((message) => message.role === 'assistant'),
-    false,
+    true,
   )
   assert.equal(
     body.messages.some((message) => message.content?.[0]?.text === 'reminder'),

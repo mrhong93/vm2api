@@ -176,3 +176,59 @@ func TestEventUsesConfiguredEnvAndOmitsBetas(t *testing.T) {
 		t.Fatalf("appVersion=%v", attrs["appVersion"])
 	}
 }
+
+func TestSanitizeEnvDropsGuestHardwareAndSecrets(t *testing.T) {
+	ev := InitEvent(Identity{
+		Env: map[string]any{
+			"platform":         "linux",
+			"shell":            "zsh",
+			"cpu_model":        "Intel(R) Xeon(R) CPU",
+			"cpu_cores":        float64(4),
+			"memory_bytes":     float64(4294967296),
+			"root_disk":        "/dev/vda2",
+			"mac":              "52:54:00:11:22:33",
+			"dmi_manufacturer": "Dell Inc.",
+			"dmi_product":      "OptiPlex 7090",
+			"dmi_version":      "1.0",
+			"dmi_family":       "OptiPlex",
+			"dmi_serial":       "ABC123",
+			"dmi_uuid":         "11111111-2222-3333-4444-555555555555",
+			"node_version":     "v1",
+			"authorization":    "secret",
+			"hostname":         "guest-01",
+			"machine_id":       "should-drop",
+		},
+	}, time.Date(2026, 8, 23, 1, 0, 0, 0, time.UTC))
+	env, _ := ev.EventData["env"].(map[string]any)
+	if env["platform"] != "linux" || env["shell"] != "zsh" {
+		t.Fatalf("official keys lost: %v", env)
+	}
+	for _, drop := range append([]string{"node_version", "authorization", "hostname", "machine_id"}, guestHardwareKeys...) {
+		if _, ok := env[drop]; ok {
+			t.Fatalf("leaked %s in %v", drop, env)
+		}
+	}
+	raw, err := json.Marshal(ev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ContainsForbidden(raw) {
+		t.Fatalf("forbidden field leaked: %s", raw)
+	}
+}
+
+func TestEnvBlockFallbackHasNoGuestHardware(t *testing.T) {
+	ev := InitEvent(Identity{Platform: "linux"}, time.Date(2026, 8, 23, 1, 0, 0, 0, time.UTC))
+	env, _ := ev.EventData["env"].(map[string]any)
+	for _, key := range guestHardwareKeys {
+		if _, ok := env[key]; ok {
+			t.Fatalf("fallback env has %s: %v", key, env)
+		}
+	}
+}
+
+var guestHardwareKeys = []string{
+	"cpu_model", "cpu_cores", "memory_bytes", "root_disk", "mac",
+	"dmi_manufacturer", "dmi_product", "dmi_version", "dmi_family",
+	"dmi_serial", "dmi_uuid",
+}

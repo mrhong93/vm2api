@@ -198,12 +198,10 @@ func envBlock(id Identity) map[string]any {
 func sanitizeEnv(in map[string]any) map[string]any {
 	out := make(map[string]any, len(in)+3)
 	for key, value := range in {
-		switch key {
-		case "node_version", "is_running_with_bun", "betas":
+		if dropEnvKey(key) {
 			continue
-		default:
-			out[key] = value
 		}
+		out[key] = value
 	}
 	if shell, _ := out["shell"].(string); strings.TrimSpace(shell) == "" {
 		out["shell"] = "bash"
@@ -220,6 +218,23 @@ func sanitizeEnv(in map[string]any) map[string]any {
 		delete(out, "build_time")
 	}
 	return out
+}
+
+func dropEnvKey(key string) bool {
+	switch strings.ToLower(strings.TrimSpace(key)) {
+	case "node_version", "is_running_with_bun", "betas",
+		"authorization", "cookie", "x-api-key", "proxy-authorization",
+		"hostname", "machine_id", "machine-id", "kernel_release",
+		"os_pretty", "os_id", "runtime_kind",
+		// Guest hardware: not in the official CLI env (2.1.296), so older
+		// worker.json files that still carry it must not upload it.
+		"cpu_model", "cpu_cores", "memory_bytes", "root_disk", "mac",
+		"dmi_manufacturer", "dmi_product", "dmi_version", "dmi_family",
+		"dmi_serial", "dmi_uuid":
+		return true
+	default:
+		return false
+	}
 }
 
 func telemetryDevice(id Identity) string {
