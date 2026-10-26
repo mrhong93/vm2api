@@ -114,6 +114,14 @@ if [ -d .git ]; then
   fi
   compose build vm2api
 else
+  # Keep the control plane on this distribution, including hosts with an old explicit image.
+  touch .env
+  if grep -q '^VM2API_IMAGE=' .env; then
+    sed -i.bak 's|^VM2API_IMAGE=.*|VM2API_IMAGE=ghcr.io/zhang2580384/vm2api|' .env
+    rm -f .env.bak
+  else
+    printf '\nVM2API_IMAGE=ghcr.io/zhang2580384/vm2api\n' >> .env
+  fi
   IMAGE_TAG=$TAG
   [ "$ARCH" != arm64 ] || IMAGE_TAG=$TAG-arm64
   touch .env

@@ -5,9 +5,9 @@
 #   查 GitHub Release → 停服务 → 换版本 → 保留配置 → 拉起。
 #
 # 安装:
-#   curl -sSL https://raw.githubusercontent.com/dofastted/vm2api/main/deploy/install.sh | sudo bash
+#   curl -sSL https://raw.githubusercontent.com/zhang2580384/vm2api/main/deploy/install.sh | sudo bash
 # 更新:
-#   curl -sSL https://raw.githubusercontent.com/dofastted/vm2api/main/deploy/install.sh | sudo bash -s -- upgrade
+#   curl -sSL https://raw.githubusercontent.com/zhang2580384/vm2api/main/deploy/install.sh | sudo bash -s -- upgrade
 # 检查:
 #   sudo bash /opt/vm2api/deploy/install.sh check
 #
@@ -25,7 +25,7 @@ BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m'
 
-GITHUB_REPO="${VM2API_GITHUB_REPO:-dofastted/vm2api}"
+GITHUB_REPO="${VM2API_GITHUB_REPO:-zhang2580384/vm2api}"
 INSTALL_DIR="${VM2API_DIR:-/opt/vm2api}"
 SERVICE_NAME="vm2api"
 DEFAULT_PORT="${PORT:-8787}"
@@ -719,6 +719,7 @@ cmd_install() {
     mode=image
     fetch_release_files "$tag"
     ensure_env
+    env_set VM2API_IMAGE ghcr.io/zhang2580384/vm2api
     env_set VM2API_IMAGE_TAG "$(image_tag_for "$tag")"
   fi
   prepare_arch_env "$mode"
@@ -758,6 +759,7 @@ cmd_upgrade() {
   else
     fetch_release_files "$tag"
     ensure_env
+    env_set VM2API_IMAGE ghcr.io/zhang2580384/vm2api
     env_set VM2API_IMAGE_TAG "$(image_tag_for "$tag")"
   fi
   prepare_arch_env "$mode"

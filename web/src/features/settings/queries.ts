@@ -29,6 +29,7 @@ export type ReleaseStatus = {
   upgrade_command: string
   check_command: string
   repo: string
+  upstream_base?: string
   source_error?: string | null
   started?: boolean
   target?: string

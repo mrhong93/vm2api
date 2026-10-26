@@ -122,6 +122,11 @@ export function AboutPane() {
           </Button>
         </CardHeader>
         <CardContent className='space-y-3'>
+          {data?.upstream_base && (
+            <p className='text-xs text-muted-foreground'>
+              上游基线：{data.upstream_base}
+            </p>
+          )}
           {version.isError ? (
             <Alert variant='destructive'>
               <AlertTitle>检查失败</AlertTitle>

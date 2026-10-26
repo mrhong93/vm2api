@@ -2,6 +2,16 @@
 
 ## 未发布
 
+## 2.0.0 — 2026-10-26
+
+- 首个自维护发行版，基于上游 v1.3.226，控制面更新源和镜像切换到 zhang2580384/vm2api；版本接口展示上游基线。
+- 合入 #665 的 GPT 按账号唤醒修复，并补齐调度设置变更时的有界唤醒广播及回归测试。
+- 提取 ohno1007/f651215 的加密账号密码导入、槽位绑定、密码/TOTP/微软邮箱登录及人工验证码接管；不合并其余计费、协议、指纹和订阅管理改动。
+- 保留基线已有的 IPv6 地理位置修复；payload 独立固定。实际浏览器登录需要对应槽位的运行时，特别是只读槽位，参见 docs/MAINTENANCE.md。
+- 发布先执行完整验证，再构建双架构镜像；所有附件与镜像成功后才公开 Release。
+
+首次从官方版本切换须指定自有镜像。不要覆盖 .env、routing.json、vms/、data/ 和现有 Compose override。详细迁移说明见 docs/releases/v2.0.0.md。
+
 ## 1.3.226 — 2026-10-24
 
 - 协议 / billing（#698）：调用方自带的 billing 不再改写 `cc_entrypoint`；网关生成或 cli-node 缺失 billing 时的补头仍为 `cc_entrypoint=sdk-cli`，并带上 `cc_turn_origin` 与轮次索引。文档明确 CCH 密封块属于 billing body、非 User-Agent；补充 crs-persona 与面板协议页回归测试。

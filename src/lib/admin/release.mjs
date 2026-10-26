@@ -16,7 +16,7 @@ const MODULE_PROJECT = path.resolve(__dirname, '..', '..', '..')
 const execFileAsync = promisify(execFile)
 const UPGRADE_SCRIPT = fs.readFileSync(path.join(MODULE_PROJECT, 'scripts', 'panel-upgrade.sh'), 'utf8')
 
-export const GITHUB_REPO = 'dofastted/vm2api'
+export const GITHUB_REPO = 'zhang2580384/vm2api'
 export const INSTALL_SCRIPT_URL = `https://raw.githubusercontent.com/${GITHUB_REPO}/main/deploy/install.sh`
 export const DOCKER_SOCK = '/var/run/docker.sock'
 
@@ -310,6 +310,7 @@ export async function buildUpdateStatus({ projectRoot: root, currentVersion, upg
     upgrade_command: upgradeCommand(updateAvailable ? latest : ''),
     check_command: `sudo bash ${hostRoot(root)}/deploy/install.sh check`,
     repo: GITHUB_REPO,
+    upstream_base: 'v1.3.226',
     source_error: remote.error,
     ...(upgrade ? { upgrade } : {}),
   }
