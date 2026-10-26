@@ -30,7 +30,7 @@
   <a href="docs/技术路线.md"><b>🗺️ 技术路线</b></a> •
   <a href="docs/DEPLOY.md"><b>🚀 部署指南</b></a> •
   <a href="docs/benchmarks/README.md"><b>📊 干净度基准</b></a> •
-  <a href="#-交流与赞助支持--community--sponsorship"><b>☕ 支持捐赠</b></a>
+  <a href="#-社区交流与共同维护--community"><b>💬 QQ 交流群</b></a>
 </p>
 
 ---
@@ -70,7 +70,7 @@
 - [📊 干净度基准评测（Benchmarks）](#-干净度基准评测benchmarks)
 - [🚀 快速开始（生产部署）](#-快速开始生产部署)
 - [🔌 接口与协议兼容](#-接口与协议兼容)
-- [💬 交流与赞助支持](#-交流与赞助支持--community--sponsorship)
+- [💬 社区交流与共同维护](#-社区交流与共同维护--community)
 - [📜 许可证与免责声明](#-许可证与免责声明--license)
 
 ---
@@ -282,7 +282,7 @@ vm2api 内置全栈自适应网关，原生支持以下所有主流生态：
   - [8️⃣ Enterprise API Key & Quota Management](#8️⃣-enterprise-api-key--quota-management)
 - [📊 Cleanliness Benchmarks](#-cleanliness-benchmarks)
 - [🚀 Quick Start (Production Setup)](#-quick-start-production-setup)
-- [💬 Community & Sponsorship](#-交流与赞助支持--community--sponsorship)
+- [💬 Community](#-社区交流与共同维护--community)
 - [📜 License & Compliance](#-许可证与免责声明--license)
 
 ---
@@ -414,28 +414,18 @@ Before opening an issue, follow [ISSUE_GUIDE.md](ISSUE_GUIDE.md): version, repro
 
 ---
 
-## 💬 交流与赞助支持 / Community & Sponsorship
+## 💬 社区交流与共同维护 / Community
 
-开源与持续维护离不开社区大家的支持与反馈。如果您觉得 **vm2api** 为您的业务或学习带来了实质帮助， 交流群或请作者喝杯咖啡！
+**群内基友共同维护 · QQ 群：1126616545**
+
+欢迎分享部署经验、提交问题反馈、参与版本测试与代码改进。一起把账号流程、槽位环境和运维体验做扎实。
 
 <div align="center">
-  <table style="border-collapse: separate; border-spacing: 20px; background: transparent;">
-    <tr>
-      <td align="center" width="320" style="padding: 24px; border-radius: 16px; border: 1px solid rgba(255,255,255,0.1); background: rgba(255,255,255,0.03); backdrop-filter: blur(10px); box-shadow: 0 8px 24px rgba(0,0,0,0.25);">
-        <img src="docs/images/support-wechat.png" alt="微信赞助收款码" width="220" style="border-radius: 12px; box-shadow: 0 4px 16px rgba(0,0,0,0.3); border: 2px solid rgba(7,193,96,0.3);" />
-        <br/><br/>
-        <b style="font-size: 16px;">☕ 支持与赞助项目</b>
-        <br/>
-        <span style="color: #888; font-size: 13px;">请作者喝杯咖啡 · 助力持续迭代演进</span>
-        <br/><br/>
-        <a href="#-交流与赞助支持--community--sponsorship">
-          <img src="https://img.shields.io/badge/Sponsor-Alipay%20Pay-07C160?style=for-the-badge&logo=alipay&logoColor=white" />
-        </a>
-      </td>
-    </tr>
-  </table>
-  <p style="color: #777; font-size: 12px; margin-top: 10px;">特别鸣谢 <b>LINUX DO</b> 等开源技术社区同仁的支持与建议</p>
+  <img src="web/public/images/community-qq.png" alt="QQ 交流群二维码，群号 1126616545" width="260" />
+  <p><b>扫码加入 QQ 交流群</b><br/>群号：1126616545 · 群内基友共同维护</p>
 </div>
+
+感谢上游项目、代码贡献者与社区朋友的支持和建议。
 
 ---
 
