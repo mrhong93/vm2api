@@ -231,11 +231,31 @@ function pidNamespaceCommand(args) {
   return ['docker', 'run', '--rm', '--network', 'host', '--pid', 'host', '--privileged', 'nicolaka/netshoot', ...args]
 }
 
-function pidAlive(pid) {
+function localPidAlive(pid) {
   const n = Number(pid)
   if (!Number.isInteger(n) || n <= 0) return false
-  const probe = pidNamespaceCommand(['sh', '-c', `kill -0 ${n} 2>/dev/null`])
-  return sh(probe).ok
+  try {
+    process.kill(n, 0)
+  } catch {
+    return false
+  }
+  if (process.platform === 'linux') {
+    try {
+      const state = fs.readFileSync(`/proc/${n}/stat`, 'utf8').split(' ')[2]
+      if (state === 'Z') return false
+    } catch {
+      return false
+    }
+  }
+  return true
+}
+
+function pidAlive(pid) {
+  if (!commandPrefix('ss').length) return localPidAlive(pid)
+  const n = Number(pid)
+  if (!Number.isInteger(n) || n <= 0) return false
+  const stat = processText(n, 'stat')
+  return !!stat && stat.slice(stat.lastIndexOf(')') + 2).split(' ')[0] !== 'Z'
 }
 
 function readPid(file) {
@@ -247,6 +267,13 @@ function readPid(file) {
 }
 
 function processText(pid, file) {
+  if (!commandPrefix('ss').length) {
+    try {
+      return fs.readFileSync(`/proc/${Number(pid)}/${file}`, 'utf8')
+    } catch {
+      return ''
+    }
+  }
   const probe = pidNamespaceCommand(['sh', '-c', `cat /proc/${Number(pid)}/${file} 2>/dev/null`])
   const result = sh(probe)
   return result.ok ? result.stdout : ''
@@ -258,24 +285,77 @@ function listenerPid(port) {
   return match ? Number(match[1]) : 0
 }
 
-function ownsEgressProcess(pid, configPath) {
+function localProcessExe(pid) {
+  const exe = fs.readlinkSync(`/proc/${pid}/exe`)
+  const deleted = exe.endsWith(' (deleted)')
+  return { path: deleted ? exe.slice(0, -' (deleted)'.length) : exe, deleted }
+}
+
+function localOwnsEgressProcess(pid, configPath, { allowDeleted = false } = {}) {
   if (!pidAlive(pid)) return false
+  try {
+    // PID files survive container restarts; a live PID may belong to another
+    // process or another proxy. Verify both before reusing or signaling it.
+    // A replaced binary keeps the old inode in this process. Reusing it leaves
+    // the new file unrun and its listen port permanently busy.
+    const exe = localProcessExe(pid)
+    if (exe.deleted && !allowDeleted) return false
+    const args = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\0')
+    const configIndex = args.indexOf('-config')
+    if (
+      !args.some((arg) => path.basename(String(arg || '').replace(/ \(deleted\)$/, '')).startsWith('kin-egress')) ||
+      configIndex <= 0 ||
+      !args[configIndex + 1]
+    )
+      return false
+    const argument = args[configIndex + 1]
+    const actualConfig = path.isAbsolute(argument)
+      ? path.resolve(argument)
+      : path.resolve(fs.readlinkSync(`/proc/${pid}/cwd`), argument)
+    return path.normalize(actualConfig) === path.normalize(path.resolve(configPath))
+  } catch {
+    return false
+  }
+}
+
+function localEgressProcessPids() {
+  if (process.platform !== 'linux') return []
+  const pids = []
+  for (const name of fs.readdirSync('/proc')) {
+    if (!/^[1-9][0-9]*$/.test(name)) continue
+    try {
+      const args = fs.readFileSync(`/proc/${name}/cmdline`).toString('utf8').split('\0')
+      if (args.some((arg) => path.basename(arg.replace(/ \(deleted\)$/, '')).startsWith('kin-egress')))
+        pids.push(Number(name))
+    } catch {
+      // Raced with exit, or a process whose /proc we cannot read.
+    }
+  }
+  return pids
+}
+
+function ownsEgressProcess(pid, configPath, { allowDeleted = false } = {}) {
+  if (!commandPrefix('ss').length) return localOwnsEgressProcess(pid, configPath, { allowDeleted })
+  if (!pidAlive(pid)) return false
+  const exe = sh(pidNamespaceCommand(['readlink', `/proc/${Number(pid)}/exe`]))
+  if (!exe.ok || (!allowDeleted && exe.stdout.endsWith(' (deleted)'))) return false
   const args = processText(pid, 'cmdline').split('\0').filter(Boolean)
   const configIndex = args.indexOf('-config')
-  if (configIndex < 0 || !args[configIndex + 1]) return false
-  const command = args.find((arg) => path.basename(String(arg || '')).startsWith('kin-egress'))
-  if (!command) return false
+  if (configIndex <= 0 || !args[configIndex + 1]) return false
+  if (!args.some((arg) => path.basename(arg).startsWith('kin-egress'))) return false
   const argument = args[configIndex + 1]
-  return (
-    path.basename(argument) === path.basename(configPath) && argument.includes(path.basename(path.dirname(configPath)))
-  )
+  const cwd = path.isAbsolute(argument) ? '' : sh(pidNamespaceCommand(['readlink', `/proc/${Number(pid)}/cwd`])).stdout
+  if (!path.isAbsolute(argument) && !cwd) return false
+  // Never identify a process by proxy ID alone: two deployments may reuse it.
+  return path.resolve(cwd, argument) === path.resolve(configPath)
 }
 
 function egressProcessPids() {
+  if (!commandPrefix('ss').length) return localEgressProcessPids()
   const probe = pidNamespaceCommand([
     'sh',
     '-c',
-    'for dir in /proc/[1-9]*; do tr "\\0" " " < "$dir/cmdline" 2>/dev/null | grep -q kin-egress && basename "$dir"; done',
+    'for dir in /proc/[1-9]*; do tr "\\0" " " < "$dir/cmdline" 2>/dev/null | grep -q kin-egress && basename "$dir"; done; true',
   ])
   const result = sh(probe)
   if (!result.ok) return []
@@ -551,7 +631,9 @@ export async function startEgressProcess({
   fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2) + '\n', { mode: 0o600 })
   const spawned = await spawnDetachedEgress(bin, cfgPath)
   if (!spawned.ok) return spawned
-  const realPid = await waitForListenerPid(listenHost, tcpPort)
+  // Native children already have a PID in our namespace. Host-network
+  // wrappers need the listener PID; callers still perform passive readiness.
+  const realPid = commandPrefix('ss').length ? await waitForListenerPid(listenHost, tcpPort, cfgPath) : spawned.pid
   if (!realPid) return { ok: false, error: `kin-egress ${listenTcp} did not listen` }
   fs.writeFileSync(pidFile, String(realPid) + '\n', { mode: 0o600 })
   return { ok: true, pid: realPid, reused: false, configPath: cfgPath, listen_tcp: listenTcp }
@@ -560,13 +642,14 @@ export async function startEgressProcess({
 export function stopEgressProcess(projectRoot, proxyId) {
   const dir = egressRunDir(projectRoot, proxyId)
   const pidFile = path.join(dir, 'egress.pid')
-  const cfgPath = path.join(dir, 'egress.json')
   const pids = [...new Set(egressPidsForProxyConfig(projectRoot, proxyId))]
   const pending = []
   for (const pid of pids) {
     const signaled = sh(pidNamespaceCommand(['sh', '-c', `kill -TERM ${Number(pid)} 2>/dev/null`]))
     if (!signaled.ok && pidAlive(pid)) return { ok: false, error: 'egress_stop_failed' }
-    if (ownsEgressProcess(pid, cfgPath)) pending.push(pid)
+    // A signaled helper may already be a zombie or have a deleted executable.
+    // Keep its verified PID until the parent has reaped it.
+    if (!egressProcessAbsent(pid)) pending.push(pid)
   }
   if (pending.length) return { ok: true, pending }
   try {
@@ -642,6 +725,7 @@ const EGRESS_KILL_GRACE_MS = 3000
 function egressProcessAbsent(pid) {
   const n = Number(pid)
   if (!Number.isInteger(n) || n <= 0) return true
+  if (commandPrefix('ss').length) return !sh(pidNamespaceCommand(['test', '-d', `/proc/${n}`])).ok
   if (process.platform === 'linux') {
     try {
       return !fs.existsSync(`/proc/${n}`)
@@ -698,12 +782,15 @@ export async function waitPortReleased(host, port, timeoutMs = 3000) {
   return { ok: false, error: 'egress_port_busy', port }
 }
 
-async function waitForListenerPid(host, port, timeoutMs = 8000) {
+async function waitForListenerPid(host, port, configPath, timeoutMs = 8000) {
   const start = Date.now()
   while (Date.now() - start < timeoutMs) {
     const probe = sh(['ss', '-H', '-ltnp', `sport = :${Number(port)}`], { timeout: 2000 })
     const match = probe.stdout.match(/pid=(\d+)/)
-    if (match) return Number(match[1])
+    if (match) {
+      const pid = Number(match[1])
+      if (portListening(host, port, pid) && ownsEgressProcess(pid, configPath)) return pid
+    }
     await delay(100)
   }
   return 0

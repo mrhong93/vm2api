@@ -749,3 +749,19 @@ test('egress wait loops do not shell out to python3', () => {
   const src = fs.readFileSync(path.join(import.meta.dirname, '../../src/lib/vm/egress.mjs'), 'utf8')
   assert.equal(src.includes('python3'), false)
 })
+
+test('matching proxy IDs in different project roots never share or stop an egress process', {
+  skip: process.platform !== 'linux',
+}, async (t) => {
+  const first = egressFixture(t, 'px-same-id')
+  const second = egressFixture(t, 'px-same-id')
+  const a = await first.start({ tcpPort: await reservePort() })
+  assert.equal(a.ok, true, a.error)
+  const b = await second.start({ tcpPort: await reservePort() })
+  assert.equal(b.ok, true, b.error)
+  assert.notEqual(a.pid, b.pid)
+  assert.equal(inspectEgressProcess(first.root, 'px-same-id').ok, true)
+  assert.equal(stopEgressProcess(second.root, 'px-same-id').ok, true)
+  await waitEgressExit(b.pid)
+  assert.equal(inspectEgressProcess(first.root, 'px-same-id').ok, true)
+})
