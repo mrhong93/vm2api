@@ -30,6 +30,8 @@ export type ReleaseStatus = {
   check_command: string
   repo: string
   upstream_base?: string
+  upstream_sync_mode?: string
+  protocol_base?: string
   source_error?: string | null
   started?: boolean
   target?: string

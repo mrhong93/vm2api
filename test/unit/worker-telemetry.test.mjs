@@ -188,7 +188,7 @@ test('routing patch accepts whole minutes from 1 minute to 24 hours', () => {
   assert.equal(validateTelemetryRoutingPatch({ telemetry: [] }).length, 1)
 })
 
-test('syncWorkerTelemetry chowns the replaced worker.json to the slot uid', () => {
+test('syncWorkerTelemetry uses slot gid for root and control-plane gid for non-root', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-tel-owner-'))
   writeOfficialHome(root, 'vm-02')
   const vm = {
@@ -209,7 +209,11 @@ test('syncWorkerTelemetry chowns the replaced worker.json to the slot uid', () =
     assert.equal(out.wrote, true)
     const owned = calls.filter((call) => String(call.file).includes(`${path.sep}worker.json`))
     assert.ok(owned.length >= 1)
-    assert.ok(owned.every((call) => call.uid === owner.uid && call.gid === owner.gid))
+    assert.ok(
+      owned.every(
+        (call) => call.uid === owner.uid && call.gid === (process.getuid() === 0 ? owner.gid : process.getgid()),
+      ),
+    )
     assert.ok(owned.some((call) => call.file !== cfgPath && String(call.file).startsWith(`${cfgPath}.`)))
     assert.equal(JSON.parse(fs.readFileSync(cfgPath, 'utf8')).telemetry.enabled, true)
   } finally {

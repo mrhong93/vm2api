@@ -2,7 +2,7 @@
 
 # vm2api
 
-自维护发行版 **v2.0.2**，基于上游 **v1.3.226**。更新源及镜像使用 `zhang2580384/vm2api`；维护规则和补丁来源见 [维护说明](docs/MAINTENANCE.md)。
+自维护发行版 **v2.1.0**，选择性同步上游 **v1.4.006** 的调度与稳定性修复，Claude 协议保持 **v1.3.226 / 本分支 v2.0.2** 的兼容行为。更新源及镜像使用 `zhang2580384/vm2api`；维护规则和补丁来源见 [维护说明](docs/MAINTENANCE.md)。
 
 **群内基友共同维护 · QQ 群：1126616545**
 
@@ -11,14 +11,14 @@
 <img src="web/public/images/community-qq.png" alt="QQ 交流群 1126616545" width="260" />
 </details>
 
-**v2.0.2：槽位注册自动化与人工接管、浏览器环境按槽管理、智能运维配置预览。**
+**v2.1.0：同步上游新调度与出口恢复机制，完整保留槽位注册、远程浏览器和智能运维配置预览。**
 
-注册辅助贯穿密码设置、2FA 确认、加密恢复与凭据入池；质量运维支持自定义题目持久化和无需裁判模型的 21 规则判定。真实定时检测及门票探针尚未接入，详见 [本版说明](docs/releases/v2.0.2.md)。
+注册辅助贯穿密码设置、2FA 确认、加密恢复与凭据入池；质量运维支持自定义题目持久化和无需裁判模型的 21 规则判定。真实定时检测及门票探针尚未接入，详见 [本版说明](docs/releases/v2.1.0.md)。
 
 ### 完全隔离的虚拟机级 AI 订阅转 API 生产网关
 **Next-Generation Fully Isolated VM-Level AI Subscription-to-API Gateway**
 
-[![Release](https://img.shields.io/badge/Release-v2.0.2-blue.svg?style=for-the-badge&logo=github)](https://github.com/zhang2580384/vm2api/releases)
+[![Release](https://img.shields.io/badge/Release-v2.1.0-blue.svg?style=for-the-badge&logo=github)](https://github.com/zhang2580384/vm2api/releases)
 [![License](https://img.shields.io/badge/License-Noncommercial-amber.svg?style=for-the-badge)](LICENSE)
 [![Benchmarks](https://img.shields.io/badge/Benchmarks-Clean%20Verified-00C853?style=for-the-badge&logo=shield)](docs/benchmarks/README.md)
 [![Cluster](https://img.shields.io/badge/Cluster-Multi--VPS%20Ready-7928CA?style=for-the-badge&logo=docker)](docs/DEPLOY.md)
@@ -96,6 +96,7 @@
 - **模型**页改为卡片矩阵。`claude-haiku-5-5` 的默认上下文、`max_tokens` 和输出上限是 100K；已经改过的管理员值不会被重置。
 - **托管密钥**可以限定平台（全部 / Anthropic / OpenAI）和勾选的槽。打到范围外返回 403。
 - **流空闲**默认 180 秒，在「重试与切号」里改。长工具参数可打开流式下发，避免静默超时。
+- **cli-node** 本机交付文件已换成 2.1.303：`share/wrap-cli/cli-node`，UPX 后 27,788,488 字节，SHA256 `efa72baab605c4ecee19a9e130b52ca2e1d6ef317880f5eaa5d90e867cc96aa4`。构建基线 `e30047ed` 加当前工作区。payload 尚未更新，线上槽位未部署。
 
 ---
 
@@ -308,6 +309,7 @@ Since 1.3.122, the caller-visible changes are:
 - **Models** are a card matrix. Haiku 5.5 defaults to a 100K context and output cap; an admin override is kept.
 - **Keys** can be limited to Anthropic or OpenAI and to selected slots. A call outside that scope returns 403.
 - **Stream idle** defaults to 180 seconds under retry settings. Long tool arguments can be streamed.
+- **cli-node** local delivery is now 2.1.303: `share/wrap-cli/cli-node`, 27,788,488 bytes after UPX, SHA256 `efa72baab605c4ecee19a9e130b52ca2e1d6ef317880f5eaa5d90e867cc96aa4`. Built from `e30047ed` plus the current working tree. The payload and live slots are unchanged.
 
 Details: [CHANGELOG.md](CHANGELOG.md). Guide: [vm2api.fkcodex.com/zh](https://vm2api.fkcodex.com/zh/).
 

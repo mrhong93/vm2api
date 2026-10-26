@@ -6,6 +6,7 @@ import path from 'node:path'
 import { createMailboxStore, mailboxError, normalizeMicrosoftEmail } from '../../src/lib/oauth/codex-mailbox-store.mjs'
 import { createCodexMailboxService } from '../../src/lib/oauth/codex-mailbox-service.mjs'
 import { recordMailboxAuthFailure } from '../../src/lib/oauth/codex-mailbox-events.mjs'
+import { getVm } from '../../src/lib/vm/vm-registry.mjs'
 import { authorizePanelRoute } from '../../src/lib/admin/panel-acl.mjs'
 
 process.env.VM2API_DB_SECRET = 'mailbox-unit-test-only-key'
@@ -199,7 +200,7 @@ test('disabled slot stays idle automatically but allows explicit login without e
   assert.deepEqual(h.calls, [])
   h.service.start('vm-01')
   await h.service.settle()
-  assert.equal(h.service.status('vm-01').state.status, 'succeeded')
+  assert.equal(h.service.status('vm-01').state.status, 'succeeded', h.service.status('vm-01').state.error_code)
   assert.equal(h.vm.schedulable, false)
   h.calls.length = 0
   await h.service.tick()
@@ -235,7 +236,7 @@ test('fatal refresh falls back to slot browser and commits same email', async (t
   await h.service.tick()
   await h.service.settle()
   assert.deepEqual(h.calls, ['network', 'prepare', 'network', 'login', 'exchange', 'commit'])
-  assert.equal(h.service.status('vm-01').state.status, 'succeeded')
+  assert.equal(h.service.status('vm-01').state.status, 'succeeded', h.service.status('vm-01').state.error_code)
   assert.ok(!JSON.stringify(h.service.status('vm-01')).includes(password))
 })
 test('401 signals force refreshing otherwise fresh credentials', async (t) => {
@@ -355,4 +356,51 @@ test('mailbox management respects existing panel roles', () => {
     assert.equal(authorizePanelRoute(method, p + suffix, 'user').ok, true)
     if (method !== 'GET') assert.equal(authorizePanelRoute(method, p + suffix, 'super').ok, false)
   }
+})
+
+for (const reason of ['no_credential', 'oauth_invalid_grant', 'credential_refresh_failed', 'proxy_desynced']) {
+  for (const off of [false, true]) {
+    test(`explicit browser authorization repairs ${reason} with operator off=${off}`, async (t) => {
+      let h
+      h = harness(t, { commit: null, getSlot: () => getVm(h.projectRoot, 'vm-01') })
+      const record = {
+        ...h.vm,
+        status: 'paused',
+        schedulable: false,
+        schedule_off: off,
+        unschedulable: { reason },
+        schedule_hold: { reason: 'maintenance', detail: { tag: 'fixture' } },
+      }
+      fs.mkdirSync(path.join(h.projectRoot, 'vms', 'vm-01'), { recursive: true })
+      const file = path.join(h.projectRoot, 'vms', 'vm-01.json')
+      fs.writeFileSync(file, JSON.stringify(record))
+      await h.service.tick()
+      assert.deepEqual(h.calls, [])
+      assert.throws(() => h.service.start('vm-01', { automatic: true }), /slot_resting/)
+      h.service.start('vm-01')
+      await h.service.settle()
+      assert.equal(h.service.status('vm-01').state.status, 'succeeded', h.service.status('vm-01').state.error_code)
+      const saved = JSON.parse(fs.readFileSync(file, 'utf8'))
+      assert.equal(saved.schedule_off, off)
+      assert.equal(saved.unschedulable?.reason, reason === 'proxy_desynced' ? reason : undefined)
+      assert.equal(saved.schedule_hold.reason, 'maintenance')
+      assert.equal(saved.schedulable, false)
+      assert.equal(saved.codex.has_access, true)
+      h.calls.length = 0
+      await h.service.tick()
+      assert.deepEqual(h.calls, [])
+    })
+  }
+}
+
+test('soft-paused slot supports manual browser maintenance; stopped runtime is still rejected', async (t) => {
+  const h = harness(t, { manageRuntime: async () => ({ installed: true }) })
+  h.vm.status = 'paused'
+  h.vm.schedule_off = true
+  h.vm.schedulable = false
+  assert.equal((await h.service.runtimeStatus('vm-01')).installed, true)
+  h.vm.runtime = { stopped: true }
+  assert.throws(() => h.service.start('vm-01'), /slot_not_running/)
+  await assert.rejects(h.service.runtimeStatus('vm-01'), /slot_not_running/)
+  assert.deepEqual(h.calls, [])
 })

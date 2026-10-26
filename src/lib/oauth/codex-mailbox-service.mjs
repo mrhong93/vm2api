@@ -1,5 +1,5 @@
 import crypto from 'node:crypto'
-import { getVm, patchVmRecord } from '../vm/vm-registry.mjs'
+import { getVm, patchVmRecord, clearUnschedulable } from '../vm/vm-registry.mjs'
 import { isCodexVm } from '../vm/vm-kind.mjs'
 import { readCodexAccounts, upsertCodexAccount, codexAccessExpiresAt } from '../vm/codex-slot.mjs'
 import { hasBoundExit } from '../vm/egress.mjs'
@@ -66,7 +66,8 @@ export function createCodexMailboxService({
   }
   const availableSlot = (id) => {
     const vm = readSlot(id)
-    if (!['running', 'ok'].includes(vm.status)) throw mailboxError('slot_not_running', 409)
+    if (!['running', 'ok', 'paused'].includes(vm.status) || vm.runtime?.stopped === true)
+      throw mailboxError('slot_not_running', 409)
     if (!hasBoundExit(vm.proxy)) throw mailboxError('proxy_required', 409)
     return vm
   }
@@ -133,7 +134,7 @@ export function createCodexMailboxService({
     if (store.read(id)?.revision !== revision) throw mailboxError('mailbox_config_changed', 409)
     return vm
   }
-  async function commitAccount(id, tokens, expectedEmail) {
+  async function commitAccount(id, tokens, expectedEmail, { automatic = false } = {}) {
     const identity = openaiIdentityFromOauthTokens(tokens)
     if (String(identity.email || '').toLowerCase() !== expectedEmail)
       throw mailboxError('authorized_email_mismatch', 409)
@@ -155,6 +156,23 @@ export function createCodexMailboxService({
       vm.refresh_status = null
       return vm
     })
+    // Successful explicit authorization repairs credential parks only. It must
+    // not enable an operator-disabled slot or clear proxy/maintenance failures.
+    if (!automatic) {
+      clearUnschedulable(projectRoot, id, {
+        by: 'credential_import',
+        only: [
+          'no_credential',
+          'oauth_cleared',
+          'oauth_revoked',
+          'oauth_invalid_grant',
+          'oauth_no_refresh',
+          'oauth_expired',
+          'credential_refresh_failed',
+          'credential_blocked',
+        ],
+      })
+    }
     clearOpenAIAccountHold(id)
     invalidateLiveCredentialCache()
   }
@@ -206,7 +224,7 @@ export function createCodexMailboxService({
       update(id, { stage: 'exchanging_code' })
       const tokens = await exchange({ sessionId, code: response.callback, vmId: id, proxyUrl: hostProxyUrlForVm(vm) })
       stillAllowed(id, login.revision, controller.signal)
-      await commitAccount(id, tokens, login.email)
+      await commitAccount(id, tokens, login.email, { automatic: entry.automatic })
       store.arm(id)
       clearMailboxAuthFailure(projectRoot, id)
       update(id, {
@@ -266,6 +284,7 @@ export function createCodexMailboxService({
       promise: null,
       pending: new Map(),
       revision: login.revision,
+      automatic,
       allowResting: !automatic && current.schedulable === false,
     }
     jobs.set(id, entry)
@@ -679,7 +698,8 @@ export function createCodexMailboxService({
   const runtimeSlot = (id) => {
     if (stopped) throw mailboxError('service_stopped', 409)
     const vm = readSlot(id)
-    if (!['running', 'ok'].includes(vm.status)) throw mailboxError('slot_not_running', 409)
+    if (!['running', 'ok', 'paused'].includes(vm.status) || vm.runtime?.stopped === true)
+      throw mailboxError('slot_not_running', 409)
     return vm
   }
   async function runtimeStatus(id) {
