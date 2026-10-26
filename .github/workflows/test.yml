@@ -12,7 +12,7 @@ on:
 # Only PR runs supersede each other; every main push keeps its own verdict so
 # it is visible when main turned red and when it recovered.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
