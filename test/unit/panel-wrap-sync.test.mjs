@@ -164,22 +164,22 @@ function releaseFetch(
             {
               name: 'kin-kernel',
               size: assetBytes.length,
-              url: 'https://api.github.com/repos/dofastted/vm2api/releases/assets/9',
+              url: 'https://api.github.com/repos/zhang2580384/vm2api/releases/assets/9',
             },
             {
               name: 'cli-node',
               size: cliBytes.length,
-              url: 'https://api.github.com/repos/dofastted/vm2api/releases/assets/8',
+              url: 'https://api.github.com/repos/zhang2580384/vm2api/releases/assets/8',
             },
             {
               name: 'cc-node',
               size: ccBytes.length,
-              url: 'https://api.github.com/repos/dofastted/vm2api/releases/assets/7',
+              url: 'https://api.github.com/repos/zhang2580384/vm2api/releases/assets/7',
             },
             {
               name: 'kin-kernel-crag',
               size: cragBytes.length,
-              url: 'https://api.github.com/repos/dofastted/vm2api/releases/assets/6',
+              url: 'https://api.github.com/repos/zhang2580384/vm2api/releases/assets/6',
             },
           ],
         }),
