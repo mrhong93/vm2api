@@ -14,15 +14,11 @@ const FIXTURE_303 = require('./official-cc-system-2.1.303.json')
 export { OFFICIAL_303_PRESET }
 
 export const OFFICIAL_303_IDENTITY = FIXTURE_303.identity_cli
-export const OFFICIAL_303_AGENT_IDENTITY = "You are a Claude agent, built on Anthropic's Claude Agent SDK."
-/** Harness ends before guidance. `{{memory_dir}}` lives in guidance and is filled per slot. */
-export const OFFICIAL_303_HARNESS = FIXTURE_303.harness
-export const OFFICIAL_303_GUIDANCE = FIXTURE_303.guidance
-/** Harness plus guidance, the previous single main block. */
-export const OFFICIAL_303_MAIN_PROMPT = `${OFFICIAL_303_HARNESS}${OFFICIAL_303_GUIDANCE}`
+/** Starts with `\n`, exactly as captured. `{{memory_dir}}` is filled per slot. */
+export const OFFICIAL_303_MAIN_PROMPT = FIXTURE_303.main_prompt
 export const OFFICIAL_303_ENV_INTRO = FIXTURE_303.environment_intro
 export const OFFICIAL_303_ENV_UNTRUSTED = FIXTURE_303.environment_untrusted
-export const OFFICIAL_303_ENV_INSTRUCTIONS = FIXTURE_303.environment_instructions
+
 export const OFFICIAL_PROFILES = Object.freeze({
   '2.1.303': Object.freeze({
     cliVersion: FIXTURE_303.meta.cli_version,
@@ -42,9 +38,8 @@ export const OFFICIAL_PROFILES = Object.freeze({
     ]),
     system: Object.freeze([
       Object.freeze({ slot: 'billing', cache: false }),
-      Object.freeze({ slot: 'identity', cache: false }),
-      Object.freeze({ slot: 'harness', cache: true, scope: 'global' }),
-      Object.freeze({ slot: 'guidance', cache: true }),
+      Object.freeze({ slot: 'identity', cache: true }),
+      Object.freeze({ slot: 'main', cache: true }),
     ]),
     messages: Object.freeze({
       reminder: 'first_user_head',
@@ -82,8 +77,7 @@ export function profileForPreset(preset) {
     raw === 'official_full' ||
     raw === 'official_303' ||
     raw === '303' ||
-    raw === 'official-303' ||
-    raw === 'zero'
+    raw === 'official-303'
   )
     return OFFICIAL_PROFILES['2.1.303']
   return OFFICIAL_PROFILES['2.1.296']
@@ -124,24 +118,8 @@ export function officialPromptShape(model = '') {
   return 'lean'
 }
 
-/** 2.1.303 catalog (display_name, knowledge_cutoff). Full-prompt models still get this sentence. */
-const MODEL_SENTENCE_CATALOG = Object.freeze({
-  'claude-3-5-haiku': ['Haiku 3.5', 'February 2025'],
-  'claude-haiku-4': ['Haiku 4.5', 'February 2025'],
-  'claude-haiku-4-5': ['Haiku 4.5', 'February 2025'],
-  'claude-haiku-5-5': ['Haiku 5.5', 'June 2026'],
-  'claude-3-5-sonnet': ['Sonnet 3.5', 'January 2025'],
-  'claude-3-7-sonnet': ['Sonnet 3.7', 'January 2025'],
-  'claude-sonnet-4': ['Sonnet 4', 'January 2025'],
-  'claude-sonnet-4-5': ['Sonnet 4.5', 'January 2025'],
-  'claude-sonnet-4-6': ['Sonnet 4.6', 'August 2025'],
-  'claude-sonnet-5': ['Sonnet 5', 'January 2026'],
-  'claude-sonnet-5-5': ['Sonnet 5.5', 'June 2026'],
-  'claude-opus-4-0': ['Opus 4', 'January 2025'],
-  'claude-opus-4-1': ['Opus 4.1', 'January 2025'],
-  'claude-opus-4-5': ['Opus 4.5', 'May 2025'],
-  'claude-opus-4-6': ['Opus 4.6', 'May 2025'],
-  'claude-opus-4-7': ['Opus 4.7', 'January 2026'],
+/** 2.1.303 model catalog entries for lean models (display_name, knowledge_cutoff). */
+const LEAN_MODEL_CATALOG = Object.freeze({
   'claude-opus-4-8': ['Opus 4.8', 'January 2026'],
   'claude-opus-5': ['Opus 5', 'May 2026'],
   'claude-opus-5-5': ['Opus 5.5', 'June 2026'],
@@ -151,34 +129,20 @@ const MODEL_SENTENCE_CATALOG = Object.freeze({
   'claude-mythos-5-1': ['Mythos 5.1', 'June 2026'],
 })
 
-/** Official runtime sentence. `auto` names the selector and omits the cutoff. Unknown ids do the same. */
+/** Official `SZn` + `bZn`: unknown models name the id only and omit the cutoff. */
 export function officialModelLine(model = '', { oneM = false } = {}) {
-  const raw = canonicalPromptModel(model)
-  if (raw === 'auto') return 'You are powered by the model auto.'
-  const exact = `${raw}${oneM ? '[1m]' : ''}`
-  const entry = MODEL_SENTENCE_CATALOG[raw]
+  const id = canonicalPromptModel(model)
+  const exact = `${id}${oneM ? '[1m]' : ''}`
+  const entry = LEAN_MODEL_CATALOG[id]
   if (!entry) return `You are powered by the model ${exact}.`
   const [name, cutoff] = entry
   return `You are powered by the model named ${name}${oneM ? ' (1M context)' : ''}. The exact model ID is ${exact}. Assistant knowledge cutoff is ${cutoff}.`
 }
 
 /** Memory lives under the slot user's home, bucketed by the working directory (official `~/.claude/projects/<slug>/memory/`). */
-const INTERACTIVE_GUIDANCE_BULLET =
-  ' - If you need the user to run a shell command themselves (e.g., an interactive login like `gcloud auth login`), suggest they type `! <command>` in the prompt \u2014 the `!` prefix runs the command in this session so its output lands directly in the conversation.\n'
-
-/** `cli` keeps the interactive `!` bullet. `sdk-cli` is the --print capture and drops it. */
-export function renderOfficial303Guidance({ cwd = '', entrypoint = 'sdk-cli' } = {}) {
-  const home = sanitizeInboundCwd(cwd)
-  const slug = officialProjectSlug(home)
-  let text = OFFICIAL_303_GUIDANCE
-  if (home && slug) text = text.replace('{{memory_dir}}', `${home}/.claude/projects/${slug}/memory/`)
-  else text = text.replace(/\n# Memory\n[\s\S]*?(?=\n# Environment\n)/, '')
-  if (entrypoint !== 'cli') text = text.replace(INTERACTIVE_GUIDANCE_BULLET, '')
-  return text
-}
-
-export function renderOfficial303MainPrompt({ cwd = '', entrypoint = 'sdk-cli' } = {}) {
-  return `${OFFICIAL_303_HARNESS}${renderOfficial303Guidance({ cwd, entrypoint })}`
+export function renderOfficial303MainPrompt({ cwd = '' } = {}) {
+  const slug = officialProjectSlug(sanitizeInboundCwd(cwd) || OFFICIAL_SLOT_CWD)
+  return OFFICIAL_303_MAIN_PROMPT.replace('{{memory_dir}}', `${OFFICIAL_SLOT_CWD}/.claude/projects/${slug}/memory/`)
 }
 
 /**
@@ -187,26 +151,25 @@ export function renderOfficial303MainPrompt({ cwd = '', entrypoint = 'sdk-cli' }
  * No timezone line: 2.1.303 does not write one.
  */
 export function buildOfficial303Environment(env = {}, { model = '', oneM = false } = {}) {
-  const cwd = sanitizeInboundCwd(env.cwd)
   const os = String(env.osVersion || '').trim() || (env.kernel ? `Linux ${env.kernel}` : '')
   const lines = [
     '# Environment',
     OFFICIAL_303_ENV_INTRO,
-    ...(cwd ? [` - Primary working directory: ${cwd}`] : []),
+    ` - Primary working directory: ${sanitizeInboundCwd(env.cwd) || OFFICIAL_SLOT_CWD}`,
     ` - Is a git repository: ${env.git === true ? 'true' : 'false'}`,
     ` - Platform: ${String(env.platform || '').trim() || 'linux'}`,
     ` - Shell: ${String(env.shell || '').trim() || 'bash'}`,
   ]
   if (os) lines.push(` - OS Version: ${os}`)
   lines.push(OFFICIAL_303_ENV_UNTRUSTED)
-  return lines.join('\n')
+  return `${lines.join('\n')}\n\n${officialModelLine(model || env.modelId, { oneM })}`
 }
 
 const BILLING_RE = /^\s*x-anthropic-billing-header:/i
 const IDENTITY_TEXTS = new Set([
-  OFFICIAL_303_IDENTITY,
-  OFFICIAL_303_AGENT_IDENTITY,
+  "You are Claude Code, Anthropic's official CLI for Claude.",
   "You are Claude Code, Anthropic's official CLI for Claude, running within the Claude Agent SDK.",
+  "You are a Claude agent, built on Anthropic's Claude Agent SDK.",
 ])
 
 export function isOfficialIdentityText(text) {
@@ -223,9 +186,7 @@ export function classifySystemText(text) {
   if (isBillingText(t)) return 'billing'
   if (isOfficialIdentityText(t)) return 'identity'
   if (t.trimStart().startsWith('# Environment')) return 'env'
-  if (t.includes('You are an agent working with the user toward their goals')) return 'harness'
-  if (t.trim() === '__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__') return 'boundary'
-  if (t.includes('Write code that reads like the surrounding code')) return 'guidance'
+  if (t.includes('You are an agent working with the user toward their goals')) return 'main'
   if (t.includes('You are an interactive agent that helps users')) return 'main_full'
   if (t.trimStart().startsWith('# Reporting outcomes')) return 'reporting'
   return 'other'

@@ -74,6 +74,7 @@
 | POST | `/vms/:id/schedulable` | 操作员开关 `{ schedulable }`，不改容器。`false` = 调度关；`true` = 调度开，同时清除不可调度。凭证已失效或吊销时开启返回 409 `credential_unavailable`（先重新导入凭证） |
 | POST | `/vms/:id/cooldown/clear` | 清账号/模型冷却、粘性钉和 `/usage` 429 旗标；GPT 槽同时清除可恢复的 `codex.extra.codex_limited_until`，再重算调度，重新入池 |
 | POST | `/vms/:id/test-chat` | loopback `POST /v1/messages`，master 可钉槽；官方 CC 入站 + 4 块 system。默认 prompt `hello` |
+| POST | `/vms/:id/count-tokens` | Setup Token / Console API Key 经槽 Go worker SOCKS 打官方 `POST /v1/messages/count_tokens`。body `{ model, messages, system?, tools? }`。完整 OAuth 400 `count_tokens_unsupported`。成功 `{ input_tokens, model, credential_mode, vm_id }` |
 | GET/PUT/DELETE | `/vms/:id/test-schedule` | 每 VM 一条真实对话定时计划，回 `{ schedule }`。PUT 保存结构化调度 `{ enabled?, frequency, minute?, time?, weekdays?, timezone, model, prompt, max_tokens?, reasoning_effort? }`（`frequency`=`hourly`/`daily`/`weekly`；服务端内部编译五字段 cron，响应不回 `cron` 字符串）。`enabled` 缺省 `false`；Claude 用 `max_tokens`，Codex 用 `reasoning_effort`。GET/PUT 含最近结果、下次运行时间与运行状态；到点 `runVmTestChat` 并计用量；重启恢复计划但不补跑停机错过；删 VM 时清计划。租户可读写自己槽的计划 |
 | GET/PUT | `/test-schedule/default` | 全局默认调度模板（仅调度时间结构）。GET 所有已登录角色可读；**PUT 仅 admin/master**（body `{ schedule: { frequency, … } }`，`schedule: null` 清除） |
 | POST | `/test-schedule/sync` | 覆盖写调度时间：`{ scope: "all" \| "ids", vm_ids?, schedule }`。MVP **只**同步 `frequency`/时刻/星期/分钟/`timezone`，**不同步** prompt、模型、token·effort、`enabled`。无计划槽创建且 `enabled=false`（模型/Prompt 取该槽已有计划或 test-chat 默认 `hello` + 首个可测模型）。租户 `scope=all` 仅自己的槽；逐槽权限同 test-schedule |
@@ -280,7 +281,6 @@ Analytics 按官方 [`codex_thread_initialized`](https://github.com/openai/codex
 
 `persona_env_presets[当前档]=false` 同时关闭生成的 `env`、`env_timezone_only`、`env_official` 和槽位 `timezone` 模板变量；官方完整档的 Environment 不再固定开启。空的生成环境块直接省略，不保留 cache / 零宽占位。调用方或自定义模板字面提供的环境和时区原样使用；关闭时 native 不剥掉调用方 Environment，HTTP 不按所选槽位改写其时区。控制台开关、预览和 Node 出站使用同一按档规则。
 
-所有提示词档统一为 2.1.303；`official_303` 不再是可选档，兼容读写时归一到 `official_full`。`persona_templates` 的块可指定 `role: "system"` 元数据：其文字装入 `messages[].role=system` 环境消息，不进入顶层 `system`。完整版新增 `env_instructions_303` 长环境说明宏；按档开关 `persona_env_instructions_presets`、`persona_timezone_presets`、`persona_locale_presets` 均默认关闭，分别加载长说明、时区、语言。环境总开关关闭时，这些选项及模型附加句均不生成；已有调用方环境不删除。预览区明确区分两个注入区域，并不等同于最终 CLI wire 抓包。
 
 ### OpenAI 全局额度
 

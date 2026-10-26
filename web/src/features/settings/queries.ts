@@ -30,6 +30,8 @@ export type ReleaseStatus = {
   check_command: string
   repo: string
   upstream_base?: string
+  upstream_sync_mode?: string
+  protocol_base?: string
   source_error?: string | null
   started?: boolean
   target?: string
@@ -125,7 +127,6 @@ export type OutboundProfile = {
   preset: string
   cli_version: string
   user_agent: string
-  cc_entrypoint: string
   anthropic_beta: string
   beta_sample_model: string
 }

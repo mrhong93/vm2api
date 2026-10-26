@@ -125,6 +125,8 @@ export function AboutPane() {
           {data?.upstream_base && (
             <p className='text-xs text-muted-foreground'>
               上游基线：{data.upstream_base}
+              {data.upstream_sync_mode === 'selective' &&
+                `（选择性同步，协议保留 ${data.protocol_base}）`}
             </p>
           )}
           {version.isError ? (

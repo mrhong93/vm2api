@@ -378,8 +378,7 @@ export function createRoutingRuntime(ctx) {
     return (
       Object.prototype.hasOwnProperty.call(compatibility, 'cache_ttl') ||
       Object.prototype.hasOwnProperty.call(compatibility, 'persona_preset') ||
-      Object.prototype.hasOwnProperty.call(compatibility, 'cch_enabled') ||
-      Object.prototype.hasOwnProperty.call(compatibility, 'cc_entrypoint')
+      Object.prototype.hasOwnProperty.call(compatibility, 'cch_enabled')
     )
   }
 

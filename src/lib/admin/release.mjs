@@ -311,6 +311,8 @@ export async function buildUpdateStatus({ projectRoot: root, currentVersion, upg
     check_command: `sudo bash ${hostRoot(root)}/deploy/install.sh check`,
     repo: GITHUB_REPO,
     upstream_base: 'v1.4.006',
+    upstream_sync_mode: 'selective',
+    protocol_base: 'v1.3.226',
     source_error: remote.error,
     ...(upgrade ? { upgrade } : {}),
   }
