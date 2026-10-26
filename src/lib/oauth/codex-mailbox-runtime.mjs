@@ -166,10 +166,10 @@ export function stagePortableMailboxRuntime(projectRoot, vm) {
   fs.rmSync(previous, { recursive: true, force: true })
 }
 
-export async function assertMailboxSlotNetwork(vm) {
+export async function assertMailboxSlotNetwork(vm, { inspect = inspectContainerOrNull } = {}) {
   const host = slotHost(vm)
   if (host.native) throw mailboxError('linux_slot_required')
-  const container = await inspectContainerOrNull(host.dockerApi(), slotExecContainer(vm))
+  const container = await inspect(host.dockerApi(), slotExecContainer(vm))
   if (!container?.State?.Running || container.State.Paused) throw mailboxError('slot_not_running', 409)
   const expected = slotNetworkForVm(vm)
   if (!expected || container.HostConfig?.NetworkMode !== expected) throw mailboxError('slot_egress_mismatch', 409)
@@ -210,7 +210,16 @@ export function runMailboxSlotProcess({
       : {
           action,
           runner: fs.readFileSync(path.join(projectRoot, 'scripts', 'codex-mailbox-browser.py'), 'utf8'),
-          payload,
+          payload: {
+            ...payload,
+            // Slot configuration wins over request bodies and the control-plane
+            // environment. Missing legacy fields are resolved INSIDE the slot.
+            slot_environment: {
+              locale: String(vm.locale || vm.fingerprint?.locale || '').trim(),
+              timezone: String(vm.timezone || vm.fingerprint?.timezone || '').trim(),
+              proxy_mode: 'slot_network',
+            },
+          },
         }
   return new Promise((resolve, reject) => {
     const child = spawnImpl('docker', argv, { env: host.dockerEnv() || process.env, stdio: ['pipe', 'pipe', 'pipe'] })

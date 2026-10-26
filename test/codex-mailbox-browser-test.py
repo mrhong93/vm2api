@@ -17,6 +17,30 @@ spec.loader.exec_module(mod)
 
 
 class PureTests(unittest.TestCase):
+    def test_slot_language_timezone_override_process_defaults(self):
+        options = mod.browser_context_options({'slot_environment': {
+            'locale': 'zh_CN.UTF-8', 'timezone': 'Asia/Shanghai', 'proxy_mode': 'slot_network'}},
+            {'LANG': 'en_US.UTF-8', 'TZ': 'America/New_York', 'HTTPS_PROXY': 'http://unused.invalid:9'})
+        self.assertEqual(options['locale'], 'zh-CN')
+        self.assertEqual(options['timezone_id'], 'Asia/Shanghai')
+        self.assertNotIn('proxy', options)
+        self.assertIn('--no-proxy-server', options['args'])
+        self.assertIn('--disable-quic', options['args'])
+
+    def test_legacy_slots_resolve_guest_locale_and_reject_invalid_identity(self):
+        options = mod.browser_context_options({}, {'LC_ALL': 'ja_JP.UTF-8', 'LANG': 'en_US.UTF-8', 'TZ': 'Asia/Tokyo'})
+        self.assertEqual((options['locale'], options['timezone_id']), ('ja-JP', 'Asia/Tokyo'))
+        for language in ['C.UTF-8', 'C', 'POSIX']:
+            options = mod.browser_context_options({'slot_environment': {'locale': language, 'timezone': 'UTC'}}, {})
+            self.assertEqual(options['locale'], 'en-US')
+        for setting, code in [
+            ({'locale': '../bad', 'timezone': 'UTC'}, 'browser_locale_invalid'),
+            ({'locale': 'en_US.UTF-8', 'timezone': 'Invalid/Zone'}, 'browser_timezone_invalid'),
+            ({'locale': 'en_US.UTF-8', 'timezone': 'UTC', 'proxy_mode': 'other'}, 'slot_egress_mismatch'),
+        ]:
+            with self.assertRaisesRegex(mod.FlowError, code):
+                mod.browser_context_options({'slot_environment': setting}, {})
+
     def test_rfc6238_six_digit_totp_vectors(self):
         secret = 'GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ'
         for timestamp, expected in [(59, '287082'), (1111111109, '081804'), (1111111111, '050471'),
@@ -80,6 +104,36 @@ class BrowserFixtureTests(unittest.TestCase):
 
     def tearDown(self):
         self.context.close()
+
+    def test_persistent_browser_applies_slot_language_timezone_and_keeps_session_on_restart(self):
+        with tempfile.TemporaryDirectory(prefix='slot-browser-identity-') as profile:
+            for index, (language, zone, expected_language, offset) in enumerate([
+                ('ja_JP.UTF-8', 'Asia/Tokyo', 'ja-JP', -540),
+                ('zh_CN.UTF-8', 'Asia/Shanghai', 'zh-CN', -480),
+                ('en_US.UTF-8', 'America/New_York', 'en-US', 300),
+            ]):
+                options = mod.browser_context_options({'slot_environment': {
+                    'locale': language, 'timezone': zone, 'proxy_mode': 'slot_network'}})
+                context = self.pw.chromium.launch_persistent_context(profile, **options)
+                try:
+                    seen = []
+                    def route(request):
+                        seen.append(request.request.headers.get('accept-language', ''))
+                        request.fulfill(content_type='text/html', body='<title>Slot fixture</title>')
+                    context.route('**/*', route)
+                    page = context.new_page()
+                    page.goto('https://auth.openai.com/fixture')
+                    actual = page.evaluate("""() => ({language: navigator.language,
+                        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+                        offset: new Date('2026-01-15T00:00:00Z').getTimezoneOffset()})""")
+                    self.assertEqual(actual, {'language': expected_language, 'timezone': zone, 'offset': offset})
+                    self.assertTrue(seen[0].startswith(expected_language), seen)
+                    if index:
+                        self.assertTrue(any(cookie['name'] == 'slot-fixture' for cookie in context.cookies()))
+                    context.add_cookies([{'name': 'slot-fixture', 'value': 'preserved',
+                        'url': 'https://auth.openai.com/', 'expires': int(time.time()) + 3600}])
+                finally:
+                    context.close()
 
     @staticmethod
     def form(action, field, kind='text', label='Continue'):
