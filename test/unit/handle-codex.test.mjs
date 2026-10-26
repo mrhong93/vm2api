@@ -17,6 +17,56 @@ import { resetOpenAIAccountRuntime } from '../../src/lib/pool/openai-account-run
 
 beforeEach(() => resetOpenAIAccountRuntime())
 
+test('routing broadcasts recheck each full waiter once and capacity increases admit multiple waiters', async (t) => {
+  const rt = await import('../../src/lib/pool/openai-account-runtime.mjs')
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-codex-routing-wake-'))
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  writeGptVm(root, 'vm-gpt-a')
+  const file = path.join(root, 'vms', 'vm-gpt-a.json')
+  const raw = JSON.parse(fs.readFileSync(file, 'utf8'))
+  fs.writeFileSync(file, JSON.stringify({ ...raw, policy: { maxConcurrency: 1 } }))
+  const held = rt.tryAcquireOpenAISlot('vm-gpt-a', { concurrency: 1 })
+  t.after(() => {
+    held.release()
+    rt.resetOpenAIAccountRuntime()
+  })
+  let started = 0
+  const ops = {
+    ensureCodexKernel: async () => ({ ok: true }),
+    streamCodexKernel: async ({ onEvent }) => {
+      started++
+      await onEvent('data: {"type":"response.completed"}')
+      return { ok: true, status: 200, terminalState: 'verified' }
+    },
+  }
+  const waiting = [handleCodexProtocol(codexArgs(root, ops)), handleCodexProtocol(codexArgs(root, ops))]
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(rt.openAIWaiterCount(), 2)
+  const readdir = fs.readdirSync
+  let reads = 0
+  fs.readdirSync = function (dir, ...args) {
+    if (dir === path.join(root, 'vms')) reads++
+    return readdir.call(this, dir, ...args)
+  }
+  try {
+    rt.wakeAllOpenAIWaiters()
+    await new Promise((resolve) => setImmediate(resolve))
+    assert.equal(reads, 4)
+    assert.equal(rt.openAIWaiterCount(), 2)
+    assert.equal(started, 0)
+  } finally {
+    fs.readdirSync = readdir
+  }
+  fs.writeFileSync(file, JSON.stringify({ ...raw, policy: { maxConcurrency: 3 } }))
+  rt.wakeAllOpenAIWaiters()
+  assert.deepEqual(
+    (await Promise.all(waiting)).map((result) => result.status),
+    [200, 200],
+  )
+  assert.equal(started, 2)
+  assert.equal(rt.openAIWaiterCount(), 0)
+})
+
 test('502 upstream_transport is retryable before commit', () => {
   assert.equal(
     isRetryableCodexTransport({

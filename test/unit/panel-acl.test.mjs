@@ -15,7 +15,7 @@ const serverSrc = [
 ].join('\n')
 
 test('user sees vm / proxies / keys / billing / logs / statistics', () => {
-  assert.deepEqual(viewsForRole('user'), ['vm', 'proxies', 'keys', 'billing', 'logs', 'statistics'])
+  assert.deepEqual(viewsForRole('user'), ['vm', 'proxies', 'credentials', 'keys', 'billing', 'logs', 'statistics'])
   assert.deepEqual(viewsForRole('super'), ['overview', 'cluster', 'logs', 'statistics', 'vm'])
   assert.equal(canViewPage('admin', 'statistics'), true)
   assert.equal(canViewPage('user', 'vm'), true)

@@ -1,3 +1,4 @@
+import { recordMailboxAuthFailure } from '../oauth/codex-mailbox-events.mjs'
 /**
  * Codex hop from handle-protocol. Claude convert/pool/CRS never runs here.
  */
@@ -455,7 +456,7 @@ async function admitCodexCandidate(projectRoot, req, opts, { deadline, signal })
     // A woken waiter that missed a seat it can use lost it to a newer request;
     // passing the wake on would only re-run selection for every waiter behind
     // it. Hand it on only when the freed account is not one this request takes.
-    if (woken && (woken.accountId == null || !waitIds?.includes(woken.accountId))) {
+    if (woken?.accountId != null && !waitIds?.includes(woken.accountId)) {
       wakeOpenAIWaiter(woken.accountId)
     }
     const now = Date.now()
@@ -955,6 +956,7 @@ export async function handleCodexProtocol({
           return res.end()
         }
         reportOpenAIAttempt(vm.id, attemptKind, result?.ttftMs ?? null)
+        if (Number(result?.status) === 401) recordMailboxAuthFailure(projectRoot, vm.id)
         const failureHold = codexFailureHold(result)
         if (failureHold) holdOpenAIAccount(vm.id, failureHold)
         if (res.headersSent || hopEmitted) {

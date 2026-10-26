@@ -150,6 +150,11 @@ export function wakeOpenAIWaiter(accountId = null) {
   next.wake(key)
 }
 
+/** A routing change rechecks each currently parked request once, without forwarding a wake token. */
+export function wakeAllOpenAIWaiters() {
+  for (const entry of waiters.splice(0)) entry.wake(null)
+}
+
 /**
  * Park until a seat frees, `deadline` passes, or `signal` aborts.
  * `accounts` limits which releases wake this waiter; omit it to wake on any.

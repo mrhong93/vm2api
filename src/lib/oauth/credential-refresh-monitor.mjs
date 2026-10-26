@@ -1,3 +1,4 @@
+import { isCodexVm } from '../vm/vm-kind.mjs'
 /**
  * Periodic OAuth refresh for every slot that still has a refresh token,
  * including operator 调度关. Inference no longer reaches those workers, so
@@ -77,6 +78,11 @@ export function shouldForceRefresh(vm) {
 
 export function needsScheduledRefresh(vm, now = Date.now()) {
   if (vm?.refresh_error || vm?.claude?.refresh_error) return false
+  if (isCodexVm(vm)) {
+    if (vm.schedulable === false) return false
+    const expiry = Number(vm.expires_at) || Date.parse(vm.expires_at || '')
+    return !expiry || expiry <= now + 10 * 60_000
+  }
   return needsRefresh(vm?.expires_at || vm?.claude?.expires_at, now)
 }
 

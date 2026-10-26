@@ -1,3 +1,5 @@
+import { ensureCodexCredential } from './lib/oauth/codex-credential-refresh.mjs'
+import { codexMailboxService } from './lib/oauth/codex-mailbox-service.mjs'
 /**
  * vm2api — Node control plane.
  * Inference data plane: one long-lived Go slot worker per VM
@@ -659,6 +661,11 @@ function publicCredentialRefreshResult(vmId, result, { force = false } = {}) {
 }
 
 async function refreshWorkerCredentialForVm({ vmId, vmPath, homeDir, vm, force = false }) {
+  if (isCodexVm(vm)) {
+    const result = await ensureCodexCredential(cfg.paths.project, vmId, { force })
+    if (result.ok) invalidateLiveCredentialCache()
+    return result
+  }
   // Host RefreshIfNeeded is the credential writer. Slot workers only read AT.
   const result = await ensureWorkerCredential({ vmId, vm, homeDir }, { force: !!force })
 
@@ -1267,6 +1274,7 @@ function shutdown(signal) {
   } catch {}
   try {
     credentialRefreshMonitor?.stop?.()
+    codexMailboxService(cfg.paths.project).stop()
   } catch {}
   try {
     kernelWatchdog?.stop?.()
@@ -1319,6 +1327,7 @@ server.listen(cfg.port, cfg.host, () => {
   }
   try {
     credentialRefreshMonitor?.start?.({ immediate: true })
+    codexMailboxService(cfg.paths.project).startMonitor()
   } catch (e) {
     console.warn('[credential-refresh] start failed', e?.message || e)
   }

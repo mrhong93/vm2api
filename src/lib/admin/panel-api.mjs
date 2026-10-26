@@ -1923,6 +1923,11 @@ function enrichVm(v, accountQuota, active, extras = {}) {
     auth_scheme: v.auth_scheme || v.claude?.auth_scheme || null,
     can_claude_reset: isCodex ? false : v.can_claude_reset === true,
     has_refresh: !!(v.has_refresh || workerCred?.has_refresh),
+    auto_refresh_enabled:
+      extras.routingConfig?.credential_refresh?.enabled !== false && !!(v.has_refresh || workerCred?.has_refresh),
+    refresh_error: v.refresh_error || null,
+    chatgpt_subscription_active_until: isCodex ? v.chatgpt_subscription_active_until || null : null,
+    chatgpt_plan_type: isCodex ? v.chatgpt_plan_type || null : null,
     has_session_key: !!v.has_session_key,
     proxy: merged.proxy,
     proxy_id: merged.proxy?.id || v.proxy_id || v.proxy?.id || null,

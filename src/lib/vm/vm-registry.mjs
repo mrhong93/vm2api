@@ -90,8 +90,7 @@ export function summarizeVm(vm, projectRoot = null, routing = null) {
     org_uuid: kind.kind === 'codex' ? vm.codex?.chatgpt_account_id || null : vm.claude?.org_uuid || null,
     has_token: kind.kind === 'codex' ? !!codex?.has_token : hasAccessPresence(vm.claude),
     expires_at: kind.kind === 'codex' ? codex?.expires_at || null : vm.claude?.expires_at || null,
-    refreshed_at:
-      kind.kind === 'codex' ? vm.codex?.usage?.snapshot?.updated_at || null : vm.claude?.refreshed_at || null,
+    refreshed_at: kind.kind === 'codex' ? codex?.refreshed_at || null : vm.claude?.refreshed_at || null,
     oauth_source: kind.kind === 'codex' ? 'codex-credentials' : vm.claude?.source || null,
     credential_mode: kind.kind === 'codex' ? 'oauth' : vm.claude?.mode || 'oauth',
     can_claude_reset: canClaudeResetCredits(vm, {
@@ -99,7 +98,7 @@ export function summarizeVm(vm, projectRoot = null, routing = null) {
     }),
     auth_scheme: kind.kind === 'codex' ? null : vm.claude?.auth_scheme || null,
     has_refresh: kind.kind === 'codex' ? !!codex?.has_refresh : hasRefreshPresence(vm.claude),
-    refresh_error: kind.kind === 'codex' ? null : vm.claude?.refresh_error || null,
+    refresh_error: kind.kind === 'codex' ? codex?.refresh_error || null : vm.claude?.refresh_error || null,
     account_tier:
       kind.kind === 'codex' ? 'codex' : vm.claude?.account_tier || (hasAccessPresence(vm.claude) ? 'pro' : null),
     has_session_key: false,

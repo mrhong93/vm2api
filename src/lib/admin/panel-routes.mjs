@@ -1,3 +1,5 @@
+import { handleLoginCredentials } from './login-credentials-routes.mjs'
+import { codexMailboxService } from '../oauth/codex-mailbox-service.mjs'
 /**
  * /admin and /api/panel routes. Login / logout / me and { ok, data }
  * envelopes are unchanged; slot start/reload go through startSlotReady.
@@ -1384,6 +1386,8 @@ export function createPanelHandler(ctx) {
       ) {
         return true
       }
+      if (await handleLoginCredentials(req, res, p, { projectRoot: cfg.paths.project, readBody, json, ok: panel.ok }))
+        return true
       if ((req.method === 'GET' || req.method === 'PUT') && p === '/api/panel/onboarding') {
         if (req.method === 'PUT') {
           const body = await readBody(req, 4096).catch(() => ({}))
@@ -3351,6 +3355,7 @@ export function createPanelHandler(ctx) {
         try {
           fs.rmSync(path.join(cfg.paths.project, 'vms', id), { recursive: true, force: true })
         } catch {}
+        codexMailboxService(cfg.paths.project).remove(id)
         fs.unlinkSync(vmPath)
         invalidateVmSlotReadCache(cfg.paths.project, id)
         try {

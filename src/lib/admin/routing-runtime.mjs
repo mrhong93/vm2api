@@ -49,7 +49,7 @@ import { rustKernelHealth } from '../transport/rust-kernel-client.mjs'
 import { requestKernelReloadWhenIdle, syncClaudeKernelConfigs } from '../transport/rust-kernel-supervisor.mjs'
 import { isCodexVm } from '../vm/vm-kind.mjs'
 import { syncCodexQuotaSchedule } from '../vm/vm-registry.mjs'
-import { wakeOpenAIWaiter } from '../pool/openai-account-runtime.mjs'
+import { wakeAllOpenAIWaiters } from '../pool/openai-account-runtime.mjs'
 import { normalizeVmConfig } from '../vm/machine-spec.mjs'
 import { syncWorkerTelemetry } from '../vm/vm-runtime.mjs'
 import { slotHost } from '../vm/slot-host.mjs'
@@ -313,9 +313,7 @@ export function createRoutingRuntime(ctx) {
         policy: next,
       })
     }
-    for (let i = 0; i < Math.max(1, applied.concurrency + applied.rpm + applied.sessions); i += 1) {
-      wakeOpenAIWaiter()
-    }
+    wakeAllOpenAIWaiters()
     return applied
   }
 
