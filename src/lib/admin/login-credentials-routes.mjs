@@ -16,6 +16,9 @@ export async function handleLoginCredentials(req, res, pathname, { projectRoot, 
   const owner = { id: req.panelUserId || 'master', admin: role === 'admin' }
   const service = codexMailboxService(projectRoot)
   try {
+    if (role !== 'admin' && !req.panelUserId) {
+      throw Object.assign(new Error('credential_owner_required'), { code: 'credential_owner_required', status: 403 })
+    }
     if (pool) {
       const action = pool[1] || ''
       if (req.method === 'GET' && !action) {

@@ -312,4 +312,6 @@ test('real panel import and list routes store only credentials and enforce tenan
   userId = other.id
   assert.equal((await request('GET', '')).body.data.credentials.length, 0)
   assert.equal((await request('POST', `/${id}/reveal`, {})).status, 404)
+  userId = undefined
+  assert.equal((await request('POST', '/import', { text: row })).status, 403)
 })
