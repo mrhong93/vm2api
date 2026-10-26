@@ -18,6 +18,7 @@ import {
   scheduleStateLabel,
   vmCircuit,
   vmCircuitTitle,
+  vmRunning,
 } from './vm-status'
 
 function liveVm(over: Partial<Vm> = {}): Vm {
@@ -33,6 +34,29 @@ function liveVm(over: Partial<Vm> = {}): Vm {
     ...over,
   }
 }
+
+describe('slot power state is independent of account credentials', () => {
+  it('shows running empty slots with scheduling off as powered on', () => {
+    for (const status of ['running', 'ok']) {
+      expect(
+        vmRunning(
+          liveVm({
+            status,
+            has_token: false,
+            has_refresh: false,
+            schedulable: false,
+          })
+        )
+      ).toBe(true)
+    }
+  })
+  it('keeps stopped slots off even when credentials exist', () => {
+    expect(vmRunning(liveVm({ status: 'stopped' }))).toBe(false)
+    expect(
+      vmRunning(liveVm({ status: 'running', runtime: { stopped: true } }))
+    ).toBe(false)
+  })
+})
 
 describe('health probe must not paint a live ticket unavailable', () => {
   it('ignores availability.bad from test-chat credential_refresh_failed', () => {

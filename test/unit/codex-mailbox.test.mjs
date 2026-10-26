@@ -70,6 +70,93 @@ function harness(t, opts = {}) {
   }
 }
 
+test('remote clipboard is explicit, validated, and absent from status and persisted state', async (t) => {
+  const clipboard = 'offline-clipboard-service-fixture'
+  let lastControl
+  const h = harness(t, {
+    runSlot: async ({ action, onControl, onEvent, signal }) => {
+      if (action === 'prepare') return { ok: true }
+      onControl((message) => {
+        lastControl = message
+        onEvent({ event: 'rpc', id: message.id, ok: true, data: { text: clipboard } })
+      })
+      await new Promise((resolve) => signal.addEventListener('abort', resolve, { once: true }))
+      return { ok: true }
+    },
+  })
+  h.service.remote('vm-01')
+  await new Promise(setImmediate)
+  assert.equal(lastControl, undefined)
+  assert.throws(() => h.service.control('vm-01', { op: 'clipboard', text: 'unexpected' }), /invalid_browser_operation/)
+  assert.deepEqual(await h.service.control('vm-01', { op: 'clipboard' }), { text: clipboard })
+  assert.equal(lastControl.op, 'clipboard')
+  assert.ok(!JSON.stringify(h.service.status('vm-01')).includes(clipboard))
+  for (const name of fs.readdirSync(path.join(h.projectRoot, 'data/codex-mailbox'))) {
+    assert.ok(!fs.readFileSync(path.join(h.projectRoot, 'data/codex-mailbox', name), 'utf8').includes(clipboard))
+  }
+})
+
+test('runtime maintenance never generates OAuth or uses account credentials and shares the browser job lock', async (t) => {
+  let complete
+  const operations = []
+  const h = harness(t, {
+    manageRuntime: async ({ action, onStage }) => {
+      operations.push(action)
+      if (action === 'status') return { supported: true, installed: false }
+      onStage('installing_browser_runtime')
+      await new Promise((resolve) => {
+        complete = resolve
+      })
+      return { supported: true, installed: action === 'install', verified: true }
+    },
+  })
+  h.store.remove('vm-01')
+  assert.equal((await h.service.runtimeStatus('vm-01')).installed, false)
+  assert.equal(h.service.runtime('vm-01', 'install').running, true)
+  await new Promise(setImmediate)
+  assert.throws(() => h.service.start('vm-01'), /mailbox_login_busy/)
+  assert.throws(() => h.service.remote('vm-01'), /mailbox_login_busy/)
+  assert.equal((await h.service.runtimeStatus('vm-01')).stage, 'installing_browser_runtime')
+  await h.service.tick()
+  assert.deepEqual(h.calls, [])
+  complete()
+  await h.service.settle()
+  assert.equal((await h.service.runtimeStatus('vm-01')).running, false)
+  assert.deepEqual(operations, ['status', 'install', 'status'])
+  h.vm.schedulable = false
+  assert.equal((await h.service.runtimeStatus('vm-01')).installed, false)
+  assert.equal(h.service.runtime('vm-01', 'uninstall').running, true)
+  await new Promise(setImmediate)
+  complete()
+  await h.service.settle()
+  assert.equal(h.vm.schedulable, false)
+  assert.deepEqual(h.calls, [])
+})
+
+test('a delayed status probe cannot overwrite active browser maintenance progress', async (t) => {
+  let finishProbe, finishInstall
+  const h = harness(t, {
+    manageRuntime: async ({ action, onStage }) => {
+      if (action === 'status')
+        return new Promise((resolve) => {
+          finishProbe = resolve
+        })
+      onStage('installing_browser_runtime')
+      return new Promise((resolve) => {
+        finishInstall = resolve
+      })
+    },
+  })
+  const probe = h.service.runtimeStatus('vm-01')
+  h.service.runtime('vm-01', 'install')
+  await new Promise(setImmediate)
+  finishProbe({ installed: false })
+  assert.equal((await probe).running, true)
+  assert.equal((await h.service.runtimeStatus('vm-01')).stage, 'installing_browser_runtime')
+  finishInstall({ installed: true })
+  await h.service.settle()
+})
+
 test('mailbox password and email encrypted at rest; summary never returns secret', (t) => {
   const h = harness(t)
   const disk = fs.readFileSync(path.join(h.projectRoot, 'data/codex-mailbox/vm-01.login.json'), 'utf8')
@@ -103,12 +190,19 @@ test('saving requires encryption; wrong encryption key cannot read credentials',
     process.env.VM2API_DB_SECRET = old
   }
 })
-test('disabled slot performs no refresh, browser preparation or login', async (t) => {
+test('disabled slot stays idle automatically but allows explicit login without enabling scheduling', async (t) => {
   const h = harness(t)
   h.vm.schedulable = false
   await h.service.tick()
   assert.deepEqual(h.calls, [])
-  assert.throws(() => h.service.start('vm-01'), /slot_resting/)
+  assert.throws(() => h.service.start('vm-01', { automatic: true }), /slot_resting/)
+  assert.deepEqual(h.calls, [])
+  h.service.start('vm-01')
+  await h.service.settle()
+  assert.equal(h.service.status('vm-01').state.status, 'succeeded')
+  assert.equal(h.vm.schedulable, false)
+  h.calls.length = 0
+  await h.service.tick()
   assert.deepEqual(h.calls, [])
 })
 test('auto-off, stopped and fresh accounts stay idle', async (t) => {

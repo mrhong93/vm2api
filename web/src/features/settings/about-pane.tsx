@@ -199,6 +199,37 @@ export function AboutPane() {
 
       <Card>
         <CardHeader>
+          <CardTitle>社区共同维护</CardTitle>
+        </CardHeader>
+        <CardContent className='flex flex-col gap-5 sm:flex-row sm:items-center'>
+          <img
+            src={`${import.meta.env.BASE_URL}images/community-qq.png`}
+            alt='QQ 交流群二维码，群号 1126616545'
+            className='w-48 rounded-xl'
+            loading='lazy'
+          />
+          <div className='space-y-2'>
+            <p className='font-medium'>群内基友共同维护</p>
+            <p className='text-sm'>
+              QQ 群：<span className='font-mono select-all'>1126616545</span>
+            </p>
+            <p className='text-sm text-muted-foreground'>
+              一起测试、反馈、改进，让每一次迭代都有据可验。
+            </p>
+            <a
+              className='inline-flex items-center gap-1 text-sm text-primary hover:underline'
+              href='https://github.com/zhang2580384/vm2api'
+              target='_blank'
+              rel='noreferrer'
+            >
+              参与维护 <ExternalLink className='size-3.5' />
+            </a>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
           <CardTitle>一键更新</CardTitle>
         </CardHeader>
         <CardContent className='space-y-3'>
@@ -209,7 +240,7 @@ export function AboutPane() {
           </p>
           <pre className='overflow-x-auto rounded-md bg-muted px-3 py-2 font-mono text-xs'>
             {data?.upgrade_command ||
-              'curl -sSL https://raw.githubusercontent.com/dofastted/vm2api/main/deploy/install.sh | sudo bash -s -- upgrade'}
+              'curl -sSL https://raw.githubusercontent.com/zhang2580384/vm2api/main/deploy/install.sh | sudo bash -s -- upgrade'}
           </pre>
           <div className='flex flex-wrap gap-2'>
             <Button

@@ -5,6 +5,7 @@ import { toast } from 'sonner'
 import { api, panelFetch } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { Textarea } from '@/components/ui/textarea'
 import { type LoginStatus, loginLabel } from './codex-password-panel'
 
 type Frame = {
@@ -20,6 +21,10 @@ export function CodexBrowserPanel({ vm }: { vm: Vm }) {
   const [open, setOpen] = useState(false)
   const [busy, setBusy] = useState(false)
   const [text, setText] = useState('')
+  const [clipboard, setClipboard] = useState('')
+  const [readingClipboard, setReadingClipboard] = useState(false)
+  const clipboardField = useRef<HTMLTextAreaElement>(null)
+  const clipboardGeneration = useRef(0)
   const [url, setUrl] = useState('https://chatgpt.com/')
   const owned = useRef(false)
   const status = useQuery({
@@ -27,8 +32,24 @@ export function CodexBrowserPanel({ vm }: { vm: Vm }) {
     queryFn: () => api<LoginStatus>(endpoint),
     refetchInterval: open ? 2000 : false,
   })
-  const enabled =
-    open && vm.schedulable !== false && status.data?.browser.ready === true
+  const enabled = open && status.data?.browser.ready === true
+  useEffect(() => {
+    clipboardGeneration.current += 1
+    setClipboard('')
+    setReadingClipboard(false)
+    return () => {
+      clipboardGeneration.current += 1
+    }
+  }, [vm.id, enabled])
+  useEffect(() => {
+    const connect = (event: Event) => {
+      if ((event as CustomEvent<string>).detail !== vm.id) return
+      owned.current = false
+      setOpen(true)
+    }
+    window.addEventListener('codex-open-browser', connect)
+    return () => window.removeEventListener('codex-open-browser', connect)
+  }, [vm.id])
   const frame = useQuery({
     queryKey: ['codex-browser-frame', vm.id],
     queryFn: () =>
@@ -37,7 +58,8 @@ export function CodexBrowserPanel({ vm }: { vm: Vm }) {
         body: JSON.stringify({ op: 'frame' }),
       }),
     enabled,
-    refetchInterval: enabled ? 900 : false,
+    refetchInterval: (q) => (enabled ? (q.state.error ? 5000 : 1000) : false),
+    refetchOnWindowFocus: false,
     retry: false,
     gcTime: 0,
   })
@@ -79,6 +101,44 @@ export function CodexBrowserPanel({ vm }: { vm: Vm }) {
       setBusy(false)
     }
   }
+  async function readClipboard() {
+    const generation = clipboardGeneration.current
+    setReadingClipboard(true)
+    setClipboard('')
+    try {
+      const result = await api<{ text: string }>(`${endpoint}/control`, {
+        method: 'POST',
+        body: JSON.stringify({ op: 'clipboard' }),
+      })
+      if (generation === clipboardGeneration.current) setClipboard(result.text)
+    } catch (error) {
+      if (generation === clipboardGeneration.current)
+        toast.error(loginLabel((error as Error).message))
+    } finally {
+      if (generation === clipboardGeneration.current) setReadingClipboard(false)
+    }
+  }
+  async function copyClipboard() {
+    try {
+      if (window.isSecureContext && navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(clipboard)
+        toast.success('已复制到本机')
+        return
+      }
+    } catch {
+      // LAN panels commonly use HTTP, where the Clipboard API is unavailable.
+    }
+    clipboardField.current?.focus()
+    clipboardField.current?.select()
+    let copied = false
+    try {
+      copied = document.execCommand('copy')
+    } catch {
+      // Keep the text selected for browsers that disable programmatic copying.
+    }
+    if (copied) toast.success('已复制到本机')
+    else toast.info('内容已选中，请按 Ctrl+C 或长按复制')
+  }
   async function stop() {
     setBusy(true)
     try {
@@ -100,7 +160,9 @@ export function CodexBrowserPanel({ vm }: { vm: Vm }) {
         <Button
           size='sm'
           variant='outline'
-          disabled={busy || vm.schedulable === false}
+          disabled={
+            busy || (vm.schedulable === false && !status.data?.browser.active)
+          }
           onClick={() => void start()}
         >
           {open ? '连接远程屏幕' : '打开远程浏览器'}
@@ -117,7 +179,7 @@ export function CodexBrowserPanel({ vm }: { vm: Vm }) {
         )}
       </div>
       <p className='text-xs text-muted-foreground'>
-        遇到验证码时，可接管屏幕完成验证后继续自动登录。
+        可直接打开远程浏览器手动操作；自动任务遇到验证码时，也可接管屏幕。
       </p>
       {open && (
         <>
@@ -134,7 +196,7 @@ export function CodexBrowserPanel({ vm }: { vm: Vm }) {
                 disabled={!enabled}
                 onClick={() => void control(manual ? 'resume' : 'takeover')}
               >
-                {manual ? '继续自动登录' : '接管鼠标键盘'}
+                {manual ? '继续自动流程' : '接管鼠标键盘'}
               </Button>
             )}
             <Button
@@ -249,8 +311,9 @@ export function CodexBrowserPanel({ vm }: { vm: Vm }) {
           <div className='flex gap-2'>
             <Input
               aria-label='向浏览器输入文字'
-              type='password'
-              autoComplete='new-password'
+              type='text'
+              autoComplete='off'
+              spellCheck={false}
               value={text}
               onChange={(e) => setText(e.target.value)}
               placeholder='向已聚焦的输入框发送文字'
@@ -269,6 +332,50 @@ export function CodexBrowserPanel({ vm }: { vm: Vm }) {
             >
               Enter
             </Button>
+          </div>
+          <div className='space-y-2 rounded border p-2'>
+            <div className='flex flex-wrap gap-2'>
+              <Button
+                size='sm'
+                variant='outline'
+                disabled={!usable || readingClipboard}
+                onClick={() => void readClipboard()}
+              >
+                {readingClipboard ? '正在读取…' : '读取远程剪贴板'}
+              </Button>
+              {clipboard && (
+                <>
+                  <Button
+                    size='sm'
+                    variant='outline'
+                    onClick={() => void copyClipboard()}
+                  >
+                    复制到本机
+                  </Button>
+                  <Button
+                    size='sm'
+                    variant='ghost'
+                    onClick={() => setClipboard('')}
+                  >
+                    清除显示
+                  </Button>
+                </>
+              )}
+            </div>
+            <p className='text-xs text-muted-foreground'>
+              先在远程网页点击复制，再读取到这里。内容仅临时显示，关闭屏幕后清除。
+            </p>
+            {clipboard && (
+              <Textarea
+                ref={clipboardField}
+                aria-label='远程剪贴板内容'
+                value={clipboard}
+                readOnly
+                autoComplete='off'
+                spellCheck={false}
+                className='font-mono'
+              />
+            )}
           </div>
         </>
       )}

@@ -41,6 +41,33 @@ export function createCredentialPool(projectRoot) {
     updated_at: record.updated_at,
   })
   return {
+    createRegistered(record, owner) {
+      if (!owner?.id) throw mailboxError('credential_owner_required', 403)
+      const [incoming] = parseLoginBatch(`${record.email}----${record.password}----${record.totp_secret}`)
+      const records = read()
+      const old = records.find((item) => item.owner === owner.id && item.email === incoming.email)
+      if (old) {
+        // Recover a crash between pool persistence and the draft/binding write.
+        if (
+          old.mode === incoming.mode &&
+          old.password === incoming.password &&
+          old.totp_secret === incoming.totp_secret
+        )
+          return summary(old)
+        throw mailboxError('registration_email_exists', 409)
+      }
+      const time = new Date().toISOString()
+      const next = {
+        ...incoming,
+        id: `cred-${crypto.randomUUID()}`,
+        owner: owner.id,
+        revision: crypto.randomUUID(),
+        created_at: time,
+        updated_at: time,
+      }
+      write([...records, next])
+      return summary(next)
+    },
     list(owner) {
       return read()
         .filter((record) => visible(record, owner))

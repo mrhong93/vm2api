@@ -610,7 +610,7 @@ export function vmRunning(vm: Vm | undefined): boolean {
   if (!vm) return false
   const s = String(vm.status || '').toLowerCase()
   if (s === 'stopped' || s === 'dead' || s === 'disabled') return false
-  if (!vm.has_token) return false
+  if (vm.runtime?.stopped === true) return false
   return Boolean(vm.active || s === 'running' || s === 'ok' || !s)
 }
 

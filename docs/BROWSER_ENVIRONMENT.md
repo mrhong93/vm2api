@@ -1,0 +1,29 @@
+# 槽位浏览器环境管理
+
+远程屏幕支持文字剪贴板：先在槽位网页点击「复制」，再点面板「读取远程剪贴板」，内容会显示在只读文本框中；「复制到本机」支持 HTTPS Clipboard API，也支持内网 HTTP 的选中复制回退。复制失败时可直接在文本框按 Ctrl+C。关闭屏幕、切换槽位或浏览器任务结束会清除面板显示；不写入本地存储、账号池或任务状态，也不自动读取。仅在手动浏览器或已接管的任务中允许读取，限制为支持的登录站点和 16 KiB 文字。首次启用本功能需重新打开槽位浏览器；不会清除浏览器 profile。
+
+GPT 槽位详情页的「安装浏览器环境 / 卸载浏览器环境」只管理运行文件，不执行账号登录、OAuth 或首次登录解锁。无需绑定账号凭据。槽位必须已运行，无需开启调度，也不会修改调度开关；关机或显式取消会中止维护。维护与登录、远程浏览器共用互斥锁。
+
+安装根据**实际槽位**的 `/etc/os-release`、CPU 架构和系统 Python 版本选择运行包，不根据面板机系统猜测。支持 Ubuntu 22.04（Python 3.10）、24.04（3.12）、Debian 12（3.11）、13（3.13），架构 amd64 / arm64；自定义 Python ABI 不匹配时拒绝安装。实际测试范围另行记录，支持矩阵不代表所有组合均已实测。
+
+面板使用目标 Docker 节点上的临时 builder 下载固定版本 Playwright 1.64.1、Chromium、字体和动态库，生成匹配系统的包，并缓存到面板 `share/kin-mailbox-runtime/managed/`。缓存通过 SHA-256 校验，同一系统组合可复用。远程节点目前仍通过面板传输运行包，尚未实现节点共享浏览器目录。临时下载代理 `VM2API_BROWSER_BUILD_PROXY` 仅传入 builder，不设置槽位代理；不要把带密码的代理写进公开配置。
+
+运行文件安装到槽位 `/home/kincli/.local/share/kin-mailbox/`，不修改只读系统根目录。全新临时目录内先以槽位用户启动 Chromium，使用内存 HTML、临时 profile 并拦截网页请求，检查成功才替换旧运行文件。失败或取消保留原环境。整个安装过程不读取账号凭据或现有 profile，也不访问登录页面。
+
+卸载仅移除浏览器、venv、依赖库等运行文件，保留 `profiles/`、`cache/`、`config/` 和独立存放的账号凭据。升级/重装也保留这些目录。识别到旧 `/opt/kin-mailbox` 环境时会尝试卸载其运行文件，若镜像目录只读则明确报错。卸载后点击登录会提示先安装环境，不再自动下载。
+
+API（沿用面板认证、角色和槽位所有权检查）：
+
+- `GET /api/panel/vms/:id/oauth/login/browser-environment`：只读检测，不启动浏览器。
+- `POST .../browser-environment/install`、`POST .../browser-environment/uninstall`：返回 202，轮询上面的状态接口查看结果。
+
+专用测试容器的集成验证（不得指向真实账号槽位）：
+
+```sh
+node test/manual/mailbox-browser-environment.mjs ubuntu24
+node test/manual/mailbox-browser-environment.mjs debian12
+```
+
+脚本仅操作 `vm2api-browser-test-ubuntu24` / `vm2api-browser-test-debian12`，验证实际浏览器启动、重装保留资料、损坏包回退、槽内取消、卸载及卸载后禁止自动重装，全程无账号登录。
+
+2026-10-26 在隔离测试机实测通过 Ubuntu 24.04 / Python 3.12 / amd64 和 Debian 12 / Python 3.11 / amd64，包括普通槽位用户的 prepare、上述集成流程及真实面板 HTTP 安装/卸载、未认证拒绝；当前静置状态允许显式手动维护。Ubuntu 缓存约 417 MiB、槽内约 915 MiB；Debian 缓存约 414 MiB、槽内约 912 MiB。其他系统版本、arm64、KVM 和远程集群尚未实机验证。

@@ -8,7 +8,7 @@ import { panelIdentity } from './panel-acl.mjs'
 export async function handleLoginCredentials(req, res, pathname, { projectRoot, readBody, json, ok }) {
   const pool = pathname.match(/^\/api\/panel\/login-credentials(?:\/(import|cred-[a-f0-9-]{36})(?:\/(reveal))?)?$/)
   const login = pathname.match(
-    /^\/api\/panel\/vms\/([^/]+)\/oauth\/(?:login|microsoft-mailbox)(?:\/(start|cancel|verify|remote|control|bind))?$/,
+    /^\/api\/panel\/vms\/([^/]+)\/oauth\/(?:login|microsoft-mailbox)(?:\/(start|cancel|verify|remote|control|bind|register|registration-reveal|browser-environment)(?:\/(install|uninstall))?)?$/,
   )
   if (!pool && !login) return false
   res.setHeader('Cache-Control', 'no-store')
@@ -52,11 +52,34 @@ export async function handleLoginCredentials(req, res, pathname, { projectRoot, 
     } else {
       const [, id, action = ''] = login
       if (!isValidVmId(id)) throw Object.assign(new Error('invalid_vm_id'), { code: 'invalid_vm_id', status: 400 })
+      if (login[3] && action !== 'browser-environment') {
+        json(res, 405, { ok: false, error: { code: 'method_not_allowed', message: 'method_not_allowed' } })
+        return true
+      }
+      if (action === 'browser-environment') {
+        if (req.method === 'GET' && !login[3]) {
+          json(res, 200, ok(await service.runtimeStatus(id)))
+          return true
+        }
+        if (req.method === 'POST' && login[3]) {
+          json(res, 202, ok(service.runtime(id, login[3])))
+          return true
+        }
+      }
       if (req.method === 'GET' && !action) {
         json(res, 200, ok(service.status(id)))
         return true
       }
       if (req.method === 'POST') {
+        if (action === 'register') {
+          const body = await readBody(req, 1024)
+          json(res, 202, ok(service.register(id, body.email, owner)))
+          return true
+        }
+        if (action === 'registration-reveal') {
+          json(res, 200, ok(service.registrationReveal(id, owner)))
+          return true
+        }
         if (!action) {
           const body = await readBody(req, 8192)
           json(res, 200, ok(service.save(id, body)))
@@ -68,8 +91,8 @@ export async function handleLoginCredentials(req, res, pathname, { projectRoot, 
           return true
         }
         if (action === 'start') {
-          const body = await readBody(req, 1024)
-          json(res, 202, ok(service.start(id, { activateEmpty: body.activate_empty === true })))
+          await readBody(req, 1024)
+          json(res, 202, ok(service.start(id)))
           return true
         }
         if (action === 'cancel' || action === 'remote') {

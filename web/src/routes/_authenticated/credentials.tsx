@@ -1,6 +1,11 @@
 import { createFileRoute } from '@tanstack/react-router'
-import { CredentialsPage } from '@/features/credentials'
+import { OperationsPage } from '@/features/operations'
 
 export const Route = createFileRoute('/_authenticated/credentials')({
-  component: CredentialsPage,
+  validateSearch: (
+    search: Record<string, unknown>
+  ): { tab?: 'credentials' | 'quality' } => ({
+    tab: search.tab === 'quality' ? 'quality' : 'credentials',
+  }),
+  component: OperationsPage,
 })

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Runs in the selected Linux slot. Passwords arrive over stdin, never argv."""
 import base64
+import contextlib
 import hmac
 import struct
 import hashlib
@@ -9,22 +10,85 @@ import os
 import queue
 import re
 import signal
+import select
+import subprocess
 import sys
 import threading
 import time
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse, parse_qs, unquote
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 MS_HOSTS = {'login.live.com', 'login.microsoftonline.com', 'account.live.com'}
 MAIL_HOSTS = {'outlook.live.com', 'outlook.office.com', 'outlook.office365.com'}
 OPENAI_HOSTS = {'auth.openai.com', 'auth0.openai.com', 'chatgpt.com'}
+CLIPBOARD_HOSTS = OPENAI_HOSTS | MS_HOSTS | MAIL_HOSTS | {'www.chatgpt.com', 'login.microsoft.com'}
 OTP_INPUT = 'input[autocomplete="one-time-code"]:visible, input[name="code"]:visible, input[name="otc"]:visible, input[name="otp"]:visible, input[name="totp"]:visible, input[name="mfa_code"]:visible, input[id="idTxtBx_SAOTCC_OTC"]:visible, input[inputmode="numeric"]:visible'
 
 
 class FlowError(Exception):
     pass
+
+
+def enable_browser_clipboard(context):
+    # Only the supported provider origins may use this private browser's
+    # clipboard. The panel reads it only on an explicit operator request.
+    for hostname in sorted(CLIPBOARD_HOSTS):
+        context.grant_permissions(['clipboard-read', 'clipboard-write'], origin='https://' + hostname)
+
+
+@contextlib.contextmanager
+def slot_browser_display(runtime):
+    """Optional slot-local X server. It shares the browser's network namespace."""
+    display_root = Path(runtime) / 'display'
+    binary = display_root / 'bin/Xvfb'
+    if not binary.is_file():
+        yield None
+        return
+    env = dict(os.environ)
+    env['LD_LIBRARY_PATH'] = str(display_root / 'lib') + ':' + env.get('LD_LIBRARY_PATH', '')
+    read_fd, write_fd = os.pipe()
+    process = None
+    # The slot is already isolated. X11 additionally uses a private cookie;
+    # no TCP display, desktop service or host browser is exposed.
+    with tempfile.TemporaryDirectory(prefix='display-', dir=Path(runtime) / 'tmp') as folder:
+        authority = Path(folder) / 'authority'
+        cookie = os.urandom(16)
+        def write_authority(number):
+            fields = [b'', str(number).encode(), b'MIT-MAGIC-COOKIE-1', cookie]
+            authority.write_bytes(struct.pack('!H', 65535) + b''.join(struct.pack('!H', len(v)) + v for v in fields))
+            authority.chmod(0o600)
+        write_authority('')
+        try:
+            process = subprocess.Popen([str(binary), '-displayfd', str(write_fd),
+                '-screen', '0', '1365x900x24', '-nolisten', 'tcp', '-auth', str(authority),
+                '-xkbdir', str(display_root / 'xkb'), '-fp', 'built-ins'],
+                env=env, pass_fds=(write_fd,), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            os.close(write_fd)
+            write_fd = None
+            if not select.select([read_fd], [], [], 15)[0]:
+                raise FlowError('browser_display_unavailable')
+            number = os.read(read_fd, 64).decode().strip()
+            if not number.isdigit() or process.poll() is not None:
+                raise FlowError('browser_display_unavailable')
+            write_authority(number)
+            env.update(DISPLAY=':' + number, XAUTHORITY=str(authority))
+            yield env
+        except OSError:
+            raise FlowError('browser_display_unavailable')
+        finally:
+            os.close(read_fd)
+            if write_fd is not None:
+                os.close(write_fd)
+            if process is not None and process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait()
 
 
 def browser_context_options(payload, environ=None):
@@ -121,6 +185,25 @@ def totp_code(secret, timestamp=None):
         raise FlowError('invalid_totp_secret')
 
 
+def provisioning_secret(value, email):
+    """Only accept standard TOTP provisioning data displayed by the provider."""
+    value = str(value or '').strip()
+    if value.startswith('otpauth://'):
+        parsed = urlparse(value)
+        params = parse_qs(parsed.query)
+        label = unquote(parsed.path).lower()
+        if (parsed.hostname != 'totp' or params.get('algorithm', ['SHA1'])[0].upper() != 'SHA1'
+                or params.get('digits', ['6'])[0] != '6' or params.get('period', ['30'])[0] != '30'
+                or ('@' in label and email.lower() not in label)):
+            raise FlowError('registration_mfa_unconfirmed')
+        value = params.get('secret', [''])[0]
+    secret = re.sub(r'[\s-]', '', value).rstrip('=').upper()
+    if not re.fullmatch(r'[A-Z2-7]{16,256}', secret) or len(secret) % 8 not in (0, 2, 4, 5, 7):
+        return None
+    totp_code(secret)  # Check decoding before persisting or submitting a code.
+    return secret
+
+
 def safe_navigation(url):
     try:
         parsed = urlparse(url)
@@ -180,9 +263,11 @@ class BrowserLogin:
         self.active_page = None
         self.paused = False
         self.codes_queue = queue.Queue()
+        self.waiting_code_stage = None
+        self.checkpoints = queue.Queue()
         self.last_control = now()
         self.now = now
-        self.deadline = now() + (1800 if payload.get('remote') else min(480, int(payload.get('timeout_sec', 480))))
+        self.deadline = now() + (1800 if payload.get('remote') or payload.get('operation') == 'register' else min(480, int(payload.get('timeout_sec', 480))))
         self.controls = controls or queue.Queue()
         self.callback = None
         self.used_codes = set()
@@ -213,6 +298,9 @@ class BrowserLogin:
             if message.get('verification_code'):
                 self.codes_queue.put(message)
                 continue
+            if message.get('registration_checkpoint_saved') is True:
+                self.checkpoints.put(True)
+                continue
             request_id = message.get('id')
             if not request_id or not self.context:
                 continue
@@ -242,7 +330,7 @@ class BrowserLogin:
             return {'paused': True}
         if op == 'resume':
             self.paused = False
-            emit('openai_login' if not self.remote else 'remote_ready')
+            emit(self.waiting_code_stage or ('registration_resuming' if self.payload.get('operation') == 'register' else 'openai_login' if not self.remote else 'remote_ready'))
             return {'paused': False}
         if op == 'session':
             if not self.remote and not self.paused:
@@ -272,7 +360,24 @@ class BrowserLogin:
             return {}
         if not self.remote and not self.paused:
             raise FlowError('takeover_required')
-        if op == 'navigate':
+        if op == 'clipboard':
+            if not safe_navigation(page.url) or host(page) not in CLIPBOARD_HOSTS:
+                raise FlowError('browser_url_not_allowed')
+            try:
+                page.bring_to_front()
+                result = page.evaluate("""async () => {
+                    const text = await navigator.clipboard.readText();
+                    return new TextEncoder().encode(text).length > 16384 ? {too_long:true} : {text};
+                }""")
+            except Exception:
+                raise FlowError('browser_clipboard_unavailable')
+            if result.get('too_long'):
+                raise FlowError('browser_clipboard_too_large')
+            text = result.get('text')
+            if not isinstance(text, str) or not text:
+                raise FlowError('browser_clipboard_empty')
+            return {'text': text}
+        elif op == 'navigate':
             url = str(message.get('url', ''))
             if not safe_navigation(url):
                 raise FlowError('browser_url_not_allowed')
@@ -417,16 +522,46 @@ class BrowserLogin:
 
     def submit(self, page):
         self.check()
-        target = page.locator('button[type="submit"]:visible, input[type="submit"]:visible').first
-        if target.count():
+        # The homepage composer remains visible beneath the auth dialog. Its
+        # disabled Send button (and even the dialog Close button) may be a
+        # submit button, so DOM order must never choose the login action.
+        scope = page
+        focused = page.locator('input:focus, textarea:focus').first
+        if focused.count():
+            form = focused.locator('xpath=ancestor::form[1]')
+            if form.count() and form.is_visible():
+                scope = form
+        if scope is page:
+            dialog = page.locator('[role="dialog"]:visible, dialog:visible').last
+            if dialog.count():
+                scope = dialog
+        names = re.compile(r'^(Continue(?: with email)?|Next|Sign in|Log in|Login|Verify|Submit|Confirm|Send (?:verification )?code|继续|下一步|登录|验证|确认|发送验证码)$', re.I)
+        for target in scope.get_by_role('button', name=names).all():
+            if target.is_visible() and target.is_enabled():
+                target.click(timeout=5000)
+                return
+        for target in scope.locator('button[type="submit"]:visible:enabled, input[type="submit"]:visible:enabled').all():
+            label = ' '.join([target.get_attribute('aria-label') or '', target.inner_text(), target.get_attribute('value') or ''])
+            if re.search(r'\b(close|cancel|back|send (?:message|prompt))\b|关闭|取消|返回', label, re.I):
+                continue
             target.click(timeout=5000)
-        elif not self.click(page, [r'^(Continue|Next|Sign in|Verify|继续|下一步|登录|验证)$']):
-            page.keyboard.press('Enter')
+            return
+        raise FlowError('browser_submit_unavailable')
 
     def manual_code(self, page, stage='waiting_mfa'):
+        self.waiting_code_stage = stage
+        try:
+            return self.wait_for_manual_code(page, stage)
+        finally:
+            self.waiting_code_stage = None
+
+    def wait_for_manual_code(self, page, stage):
         emit(stage)
         while self.now() < self.deadline:
             self.check()
+            # A human may have completed this step through the remote screen.
+            if stage in {'registration_email_code', 'registration_password_email_code', 'registration_mfa_email_code'} and not self.registration_has_otp(page):
+                return
             try:
                 message = self.codes_queue.get_nowait()
             except queue.Empty:
@@ -440,6 +575,363 @@ class BrowserLogin:
                 emit('verifying')
                 return
         raise FlowError('manual_verification_timeout')
+
+    def registration_checkpoint(self, phase, secret=None):
+        data = {'email': self.email, 'phase': phase}
+        if phase == 'password_set':
+            data['password_verified'] = True
+        if secret:
+            data['totp_secret'] = secret
+        print(json.dumps({'event': 'registration_checkpoint', 'data': data}), flush=True)
+        end = min(self.deadline, self.now() + 20)
+        while self.now() < end:
+            self.check()
+            try:
+                self.checkpoints.get_nowait()
+                return
+            except queue.Empty:
+                self.active_page.wait_for_timeout(50)
+        raise FlowError('registration_checkpoint_failed')
+
+    def registration_origin(self, page):
+        parsed = urlparse(page.url)
+        if parsed.scheme != 'https' or parsed.hostname not in OPENAI_HOSTS or parsed.port not in (None, 443) or parsed.username or parsed.password:
+            raise FlowError('unexpected_authorization_origin')
+
+    def registration_session(self, page):
+        self.registration_origin(page)
+        if host(page) != 'chatgpt.com':
+            return False
+        session = page.evaluate("""async () => {
+            try {
+                const r = await fetch('/api/auth/session', {credentials:'include',cache:'no-store',redirect:'error'});
+                if (!r.ok || !r.headers.get('content-type')?.includes('json')) return null;
+                const s = await r.json();
+                return s.accessToken ? {email:s.user?.email} : null;
+            } catch { return null; }
+        }""")
+        if not session:
+            return False
+        if str(session.get('email') or '').lower() != self.email.lower():
+            raise FlowError('authorized_email_mismatch')
+        return True
+
+    def registration_attention(self, stage):
+        emit(stage)
+        self.paused = True
+        self.check()
+
+    def registration_has_otp(self, page):
+        return page.locator(OTP_INPUT).count() or page.locator('input[maxlength="1"]:visible').count() >= 6
+
+    def registration_active_page(self):
+        page = self.active_page
+        candidates = [p for p in self.context.pages if not p.is_closed() and p != page and host(p) in OPENAI_HOSTS and p.opener() == page]
+        if candidates:
+            self.active_page = candidates[-1]
+        self.registration_origin(self.active_page)
+        return self.active_page
+
+    def registration_email_challenge(self, page, body):
+        # Email OTP and authenticator OTP can use identical input attributes.
+        return bool(re.search(r'email[-_/]?(?:verification|verify)|verify[-_/]?email', urlparse(page.url).path, re.I) or
+                    re.search(r'(?:code|verification|verify|check|sent)[\s\S]{0,100}(?:e-?mail|inbox)|(?:e-?mail|inbox)[\s\S]{0,100}(?:code|verification|verify|sent)|邮箱.*(?:验证码|验证)|(?:验证码|验证邮件).*(?:邮箱|邮件)', body, re.I))
+
+    def registration_settings_tab(self, page, section):
+        """Fallback when the hash route opens settings but not the requested tab."""
+        profile = page.locator('[data-testid="profile-button"], [data-testid="accounts-profile-button"]').first
+        if not page.get_by_role('dialog').count() and profile.count():
+            profile.click(timeout=5000)
+            self.click(page, [r'^(Settings|设置)$'])
+            self.pause(page, 700)
+        return self.click(page, [section])
+
+    def register_password(self, page):
+        """Complete passwordless onboarding through the provider's visible UI."""
+        emit('registration_opening_password')
+        page.goto('https://chatgpt.com/#settings/Account', wait_until='domcontentloaded', timeout=30000)
+        self.pause(page, 1200)
+        submitted = False
+        opened = False
+        tab_opened = False
+        codes_submitted = 0
+        while self.now() < self.deadline:
+            self.check()
+            page = self.registration_active_page()
+            body = page.locator('body').inner_text(timeout=5000)
+            if re.search(r'verify you are human|checking your browser|验证你是真人', body, re.I):
+                self.registration_attention('captcha_required')
+                continue
+            fields = page.locator('input[type="password"]:visible')
+            confirmed = re.search(r'password (?:has been |was |is )?(?:successfully )?(?:set|added|updated|changed|created)|(?:successfully (?:set|added|updated|changed|created))[\s\S]{0,40}password|密码.*(?:设置成功|修改成功|更新成功|已设置|已更新|已修改)|(?:成功设置|成功修改|成功更新).*密码', body, re.I)
+            if submitted and confirmed and not fields.count() and not self.registration_has_otp(page):
+                verify = page if host(page) == 'chatgpt.com' else self.context.new_page()
+                if verify != page:
+                    verify.goto('https://chatgpt.com/', wait_until='domcontentloaded', timeout=30000)
+                if not self.registration_session(verify):
+                    raise FlowError('session_not_authenticated')
+                self.registration_checkpoint('password_set')
+                self.payload['password_verified'] = True
+                self.payload['registration_phase'] = 'password_set'
+                self.active_page = verify
+                return verify
+            if self.registration_has_otp(page):
+                if not self.registration_email_challenge(page, body):
+                    self.registration_attention('registration_password_attention')
+                    continue
+                if codes_submitted >= 3:
+                    raise FlowError('email_code_rejected')
+                self.manual_code(page, 'registration_password_email_code')
+                codes_submitted += 1
+                self.pause(page, 1200)
+                continue
+            if fields.count():
+                # Do not guess or replace an existing account's current password.
+                current = page.locator('input[autocomplete="current-password"]:visible, input[name*="current" i]:visible, input[name*="old" i]:visible')
+                if current.count() or re.search(r'current password|old password|当前密码|旧密码|原密码', body, re.I):
+                    self.registration_attention('registration_password_attention')
+                    continue
+                new_password = fields.first.get_attribute('autocomplete') == 'new-password' or re.search(r'(?:new|set|add|create|change|reset|update)[\s\S]{0,40}password|(?:设置|添加|创建|更改|修改|重置|新).*密码', body, re.I)
+                if not opened or not new_password or submitted:
+                    self.registration_attention('registration_password_attention')
+                    continue
+                self.registration_checkpoint('password_submitted')
+                self.payload['registration_phase'] = 'password_submitted'
+                for field in fields.all():
+                    field.fill(self.password)
+                self.submit(page)
+                submitted = True
+                emit('registration_password_submitted')
+                self.pause(page, 1200)
+                continue
+            if not opened:
+                # The operator explicitly requested setting a generated password.
+                # Some passwordless accounts still label this action "Change".
+                rows = page.locator('div, section, tr').filter(has_text=re.compile(r'password|密码', re.I))
+                for row in reversed(rows.all()):
+                    button = row.get_by_role('button', name=re.compile(r'^(Add|Set|Set up|Create|Change|Update|Add password|Set password|Change password|添加|设置|创建|更改|修改|添加密码|设置密码|修改密码)$', re.I))
+                    if button.count() == 1 and button.is_visible():
+                        button.click(timeout=5000)
+                        opened = True
+                        self.pause(page, 1000)
+                        break
+                if opened:
+                    continue
+                if self.click(page, [r'^(Add password|Set password|Create password|Change password|添加密码|设置密码|创建密码|修改密码)$']):
+                    opened = True
+                    self.pause(page, 1000)
+                    continue
+            if not tab_opened and self.registration_settings_tab(page, r'^(Account|账户|账号)$'):
+                tab_opened = True
+                self.pause(page, 700)
+                continue
+            self.registration_attention('registration_password_attention')
+        raise FlowError('registration_password_unconfirmed')
+
+    def register_account(self, context):
+        """UI-only signup. No synthetic identity, CAPTCHA solver or private auth API."""
+        self.context = context
+        page = context.new_page()
+        self.active_page = page
+        phase = self.payload.get('registration_phase', 'draft')
+        page.goto('https://chatgpt.com/', wait_until='domcontentloaded', timeout=45000)
+        attempts = {}
+        signup_password_submitted = False
+        while self.now() < self.deadline:
+            self.check()
+            page = self.registration_active_page()
+            body = page.locator('body').inner_text(timeout=5000)
+            path = urlparse(page.url).path.lower()
+            if re.search(r'account already exists|user already exists|email.*already.*registered|账号已存在|账户已存在|邮箱已.*注册', body, re.I):
+                raise FlowError('registration_email_exists')
+            if re.search(r'complete.*captcha|please.*captcha|verify you are human|checking your browser|验证你是真人|完成拼图', body, re.I):
+                self.registration_attention('captcha_required')
+                continue
+            if any(part in path for part in ['about-you', 'add-phone', 'birthday', 'profile']) or re.search(r'date of birth|tell us about yourself|出生日期|介绍一下你自己', body, re.I):
+                self.registration_attention('registration_profile_required')
+                continue
+            if host(page) == 'chatgpt.com' and self.registration_session(page):
+                if phase == 'draft':
+                    raise FlowError('registration_existing_session')
+                if phase == 'submitted':
+                    self.registration_checkpoint('account_created')
+                    phase = 'account_created'
+                if signup_password_submitted:
+                    # This run submitted a password on a create-account form,
+                    # and the subsequent email check produced a matching session.
+                    self.registration_checkpoint('password_set')
+                    self.payload['password_verified'] = True
+                    self.payload['registration_phase'] = 'password_set'
+                elif self.payload.get('password_verified') is not True:
+                    page = self.register_password(page)
+                return self.register_totp(page)
+            # A popup can become the actual signup page. Never fill a password
+            # into an existing-account login form during registration.
+            password = page.locator('input[type="password"]:visible')
+            email = page.locator('input[type="email"]:visible, input[name="email"]:visible, input[name="username"]:visible').first
+            signup = bool(re.search(r'create[-_/]?account|signup|sign-up', path) or re.search(r'create (?:your |an? )?account|创建.*帐?账户|注册账号', body, re.I))
+            if password.count():
+                if not signup or host(page) not in {'auth.openai.com', 'auth0.openai.com'}:
+                    raise FlowError('registration_existing_account')
+                if attempts.get('password', 0) >= 1:
+                    self.registration_attention('registration_page_attention')
+                    continue
+                # The random password is already durable in the control plane.
+                if phase == 'draft':
+                    self.registration_checkpoint('submitted')
+                    phase = 'submitted'
+                for field in password.all():
+                    field.fill(self.password)
+                self.submit(page)
+                attempts['password'] = 1
+                signup_password_submitted = True
+                emit('registration_password_submitted')
+                self.pause(page, 1200)
+                continue
+            if self.registration_has_otp(page):
+                if attempts.get('otp', 0) >= 3:
+                    raise FlowError('email_code_rejected')
+                self.manual_code(page, 'registration_email_code')
+                attempts['otp'] = attempts.get('otp', 0) + 1
+                self.pause(page, 1200)
+                continue
+            if email.count():
+                if attempts.get('email', 0) >= 2:
+                    self.registration_attention('registration_page_attention')
+                    continue
+                if phase == 'draft':
+                    self.registration_checkpoint('submitted')
+                    phase = 'submitted'
+                email.fill(self.email)
+                self.submit(page)
+                attempts['email'] = attempts.get('email', 0) + 1
+                emit('registration_email_submitted')
+                self.pause(page, 1200)
+                continue
+            if attempts.get('signup', 0) < 3 and self.click(page, [r'^(Sign up|Sign up for free|Create account|Create an account|注册|免费注册|创建账号|创建账户)$', r'^(Log in|Login|Sign in|登录)$']):
+                attempts['signup'] = attempts.get('signup', 0) + 1
+                emit('registration_opening')
+                self.pause(page, 1000)
+                continue
+            # Unknown onboarding and terms screens require the operator to make
+            # the actual choices, rather than inventing personal information.
+            self.registration_attention('registration_page_attention')
+        raise FlowError('login_timeout')
+
+    def register_totp(self, page):
+        if self.payload.get('password_verified') is not True:
+            raise FlowError('registration_password_unconfirmed')
+        if not self.registration_session(page):
+            raise FlowError('session_not_authenticated')
+        emit('registration_opening_security')
+        page.goto('https://chatgpt.com/#settings/Security', wait_until='domcontentloaded', timeout=30000)
+        self.pause(page, 1200)
+        secret = self.payload.get('totp_secret') or None
+        submitted = 0
+        last_code = None
+        setup_clicked = False
+        security_opened = False
+        email_codes_submitted = 0
+        provisioning_seen = False
+        while self.now() < self.deadline:
+            self.check()
+            page = self.registration_active_page()
+            body = page.locator('body').inner_text(timeout=5000)
+            if re.search(r'verify you are human|checking your browser|验证你是真人', body, re.I):
+                self.registration_attention('captcha_required')
+                continue
+            # Require an explicit provider confirmation AFTER a code generated
+            # from the captured key was submitted in this run.
+            enabled = re.search(r'(?:multi.factor authentication|authenticator app|two.factor authentication|多重身份验证|双重验证|身份验证器)[\s\S]{0,200}(?:Disable|Turn off|已启用|禁用|关闭)', body, re.I)
+            success = re.search(r'(?:successfully enabled|authentication (?:is |has been )?enabled|身份验证已启用|验证器已启用)', body, re.I)
+            if submitted and (enabled or success) and not page.locator(OTP_INPUT).count():
+                # Re-check the real session identity before returning a secret.
+                verify = page if host(page) == 'chatgpt.com' else self.context.new_page()
+                if verify != page:
+                    verify.goto('https://chatgpt.com/', wait_until='domcontentloaded', timeout=30000)
+                if not self.registration_session(verify):
+                    raise FlowError('session_not_authenticated')
+                return {'email': self.email, 'password_verified': True, 'totp_secret': secret, 'totp_verified': True}
+            if enabled and not submitted:
+                self.registration_attention('registration_mfa_recovery')
+                continue
+            scope = page.get_by_role('dialog').last
+            scope = scope if scope.count() else page.locator('body')
+            # Only read a setup key from a visible provisioning screen; never
+            # mistake an arbitrary token elsewhere on the page for a TOTP key.
+            provisioning = bool(re.search(r'scan.*(?:QR|code)|setup key|secret key|扫码|扫描.*(?:二维码|代码)|设置密钥|手动.*密钥', scope.inner_text(), re.I))
+            otp = self.registration_has_otp(page)
+            if otp and self.registration_email_challenge(page, body):
+                if email_codes_submitted >= 3:
+                    raise FlowError('email_code_rejected')
+                self.manual_code(page, 'registration_mfa_email_code')
+                email_codes_submitted += 1
+                self.pause(page, 1200)
+                continue
+            if provisioning:
+                values = scope.locator('a[href^="otpauth://"], input[readonly], code, pre, [data-testid*="secret"]').evaluate_all(
+                    'els => els.filter(e => e.getClientRects().length).map(e => e.href || e.value || e.textContent)')
+                # Some provider screens render the manual key as plain text.
+                values += re.findall(r'(?<![A-Za-z0-9])(?:[A-Z2-7]{4}[ -]){3,15}[A-Z2-7]{4}(?![A-Za-z0-9])|(?<![A-Za-z0-9])[A-Z2-7]{16,64}(?![A-Za-z0-9])', scope.inner_text())
+                found = {s for value in values if (s := provisioning_secret(value, self.email))}
+                if len(found) > 1:
+                    raise FlowError('registration_mfa_unconfirmed')
+                if found:
+                    provisioning_seen = True
+                    captured = next(iter(found))
+                    if captured != secret or self.payload.get('registration_phase') != 'totp_pending':
+                        self.registration_checkpoint('totp_pending', captured)
+                        self.payload['registration_phase'] = 'totp_pending'
+                    secret = captured
+            authenticator_challenge = re.search(r'(?:code|verification)[\s\S]{0,80}authenticator|authenticator[\s\S]{0,80}(?:code|verification)|身份验证器.*(?:验证码|代码)|(?:验证码|代码).*身份验证器', body, re.I)
+            if secret and otp and (provisioning_seen or authenticator_challenge):
+                if submitted >= 2:
+                    self.registration_attention('registration_mfa_recovery')
+                    continue
+                code = totp_code(secret)
+                if code == last_code:
+                    self.pause(page, 1000)
+                    continue
+                fill_otp(page, code)
+                self.submit(page)
+                submitted += 1
+                last_code = code
+                emit('registration_verifying_totp')
+                self.pause(page, 1200)
+                continue
+            if provisioning and self.click(page, [r"^(Can.t scan(?: (?:the )?QR code)?\??|Enter (?:a |the )?(?:setup )?key manually|无法扫描\??|手动输入密钥)$"]):
+                self.pause(page, 800)
+                continue
+            if provisioning and provisioning_seen and not otp and self.click(page, [r'^(Continue|Next|继续|下一步)$']):
+                self.pause(page, 800)
+                continue
+            if not setup_clicked:
+                # Select Enable only within the MFA/authenticator row.
+                rows = scope.locator('div, section').filter(has_text=re.compile(r'multi.factor authentication|authenticator app|多重身份验证|身份验证器', re.I))
+                clicked = False
+                for row in reversed(rows.all()):
+                    button = row.get_by_role('button', name=re.compile(r'^(Enable|Set up|启用|设置)$', re.I))
+                    if button.count() == 1 and button.is_visible():
+                        button.click(timeout=5000)
+                        clicked = True
+                        break
+                if clicked:
+                    setup_clicked = True
+                    emit('registration_enabling_totp')
+                    self.pause(page, 1000)
+                    continue
+            if not security_opened:
+                profile = page.locator('[data-testid="profile-button"], [data-testid="accounts-profile-button"]').first
+                if not page.get_by_role('dialog').count() and profile.count():
+                    profile.click(timeout=5000)
+                    self.click(page, [r'^(Settings|设置)$'])
+                    self.pause(page, 700)
+                if self.click(page, [r'^(Security|安全|安全性)$']):
+                    security_opened = True
+                    self.pause(page, 700)
+                    continue
+            self.registration_attention('registration_security_attention')
+        raise FlowError('login_timeout')
 
     def microsoft_step(self, page):
         if self.mode != 'microsoft_mailbox' or host(page) not in MS_HOSTS:
@@ -605,6 +1097,7 @@ class BrowserLogin:
         totp_attempts = 0
         last_totp = None
         session_check_at = 0
+        account_choice_sent = False
         while self.now() < self.deadline:
             self.check()
             if self.callback:
@@ -644,7 +1137,27 @@ class BrowserLogin:
                 self.paused = True
                 self.check()
                 continue
-            if pathname in ['/about-you', '/add-phone'] or re.search(r'create.account|signup', pathname):
+            if pathname.rstrip('/') == '/choose-an-account':
+                if not account_choice_sent:
+                    account = page.get_by_text(re.compile(r'^' + re.escape(self.email) + r'$', re.I)).first
+                    if account.count() and account.is_visible():
+                        account.click(timeout=5000)
+                        account_choice_sent = True
+                        emit('openai_account_selected')
+                    elif self.click(page, [r'^Use another account$|^使用其他账号$|^使用其他帐户$']):
+                        account_choice_sent = True
+                    else:
+                        emit('openai_account_selection_required')
+                        self.paused = True
+                        self.check()
+                self.pause(page)
+                continue
+            if pathname.rstrip('/') in ['/about-you', '/add-phone']:
+                emit('openai_phone_required' if pathname.rstrip('/') == '/add-phone' else 'openai_profile_required')
+                self.paused = True
+                self.check()
+                continue
+            if re.search(r'create.account|signup', pathname):
                 raise FlowError('existing_account_or_phone_required')
             if re.search(r'authenticator|two.factor|two.step|身份验证器|两步验证', body) and page.locator(OTP_INPUT).count():
                 if self.mode == 'password_totp' and self.payload.get('totp_secret'):
@@ -684,9 +1197,17 @@ class BrowserLogin:
                 if self.mode == 'password_totp':
                     if host(page) not in {'auth.openai.com', 'auth0.openai.com'} or urlparse(page.url).scheme != 'https':
                         raise FlowError('unexpected_authorization_origin')
-                    if password_attempts >= 2:
-                        raise FlowError('openai_password_rejected')
-                    page.locator('input[type="password"]:visible').first.fill(self.password)
+                    # The submitted form can stay visible (often readonly)
+                    # while auth redirects to MFA. Do not refill it during
+                    # that transition; a provider rejection is checked above.
+                    if password_attempts:
+                        self.pause(page)
+                        continue
+                    field = page.locator('input[type="password"]:visible').first
+                    if not field.is_enabled() or not field.is_editable():
+                        self.pause(page)
+                        continue
+                    field.fill(self.password)
                     self.submit(page)
                     password_attempts += 1
                     emit('openai_password')
@@ -730,38 +1251,46 @@ class BrowserLogin:
         os.chmod(profile, 0o700)
         os.environ.setdefault('PLAYWRIGHT_BROWSERS_PATH', str(runtime / 'browsers'))
         options = browser_context_options(self.payload)
-        with sync_playwright() as pw:
-            context = pw.chromium.launch_persistent_context(str(profile), **options)
-            context.set_default_timeout(8000)
-            try:
-                self.context = context
-                if self.payload.get('operation') in ['session', 'subscription']:
-                    self.remote = True
-                    self.active_page = context.new_page()
-                    result = self.control({'op': 'session'}) if self.payload['operation'] == 'session' else self.manage_subscription()
-                    print(json.dumps({'event': 'result', 'data': result}), flush=True)
-                    return
-                if self.remote:
-                    self.active_page = context.pages[0] if context.pages else context.new_page()
-                    try:
-                        self.active_page.goto('https://chatgpt.com/', wait_until='domcontentloaded', timeout=30000)
-                    except Exception:
-                        pass  # Keep the real screen available when navigation times out.
-                    emit('remote_ready')
-                    while self.now() < self.deadline:
-                        self.check()
-                        if self.now() - self.last_control > 120:
-                            raise FlowError('remote_idle_timeout')
-                        self.active_page.wait_for_timeout(100)
-                    return
-                if self.mode == 'microsoft_mailbox':
-                    self.open_mailbox(context)
-                if self.mode in ['microsoft_mailbox', 'password_totp']:
-                    self.authorize(context, web=True)
-                result = self.authorize(context)
-                print(json.dumps({'event': 'callback', 'callback_url': result}), flush=True)
-            finally:
-                context.close()
+        with slot_browser_display(runtime) as display_env:
+            if display_env:
+                options.update(headless=False, env=display_env)
+            with sync_playwright() as pw:
+                context = pw.chromium.launch_persistent_context(str(profile), **options)
+                context.set_default_timeout(8000)
+                try:
+                    self.context = context
+                    enable_browser_clipboard(context)
+                    if self.payload.get('operation') == 'register':
+                        result = self.register_account(context)
+                        print(json.dumps({'event': 'result', 'data': result}), flush=True)
+                        return
+                    if self.payload.get('operation') in ['session', 'subscription']:
+                        self.remote = True
+                        self.active_page = context.new_page()
+                        result = self.control({'op': 'session'}) if self.payload['operation'] == 'session' else self.manage_subscription()
+                        print(json.dumps({'event': 'result', 'data': result}), flush=True)
+                        return
+                    if self.remote:
+                        self.active_page = context.pages[0] if context.pages else context.new_page()
+                        try:
+                            self.active_page.goto('https://chatgpt.com/', wait_until='domcontentloaded', timeout=30000)
+                        except Exception:
+                            pass  # Keep the real screen available when navigation times out.
+                        emit('remote_ready')
+                        while self.now() < self.deadline:
+                            self.check()
+                            if self.now() - self.last_control > 120:
+                                raise FlowError('remote_idle_timeout')
+                            self.active_page.wait_for_timeout(100)
+                        return
+                    if self.mode == 'microsoft_mailbox':
+                        self.open_mailbox(context)
+                    if self.mode in ['microsoft_mailbox', 'password_totp']:
+                        self.authorize(context, web=True)
+                    result = self.authorize(context)
+                    print(json.dumps({'event': 'callback', 'callback_url': result}), flush=True)
+                finally:
+                    context.close()
 
 
 def main():
@@ -775,7 +1304,7 @@ def main():
     signal.signal(signal.SIGUSR1, cancel)
     signal.signal(signal.SIGTERM, cancel)
     signal.signal(signal.SIGALRM, lambda *_: (_ for _ in ()).throw(FlowError('login_timeout')))
-    signal.alarm(1810 if payload.get('remote') else 500)
+    signal.alarm(1810 if payload.get('remote') or payload.get('operation') == 'register' else 500)
 
     def input_loop():
         for line in sys.stdin:
