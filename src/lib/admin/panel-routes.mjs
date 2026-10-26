@@ -1,4 +1,5 @@
 import { handleLoginCredentials } from './login-credentials-routes.mjs'
+import { handleQualityConfig } from './quality-config-routes.mjs'
 import { codexMailboxService } from '../oauth/codex-mailbox-service.mjs'
 /**
  * /admin and /api/panel routes. Login / logout / me and { ok, data }
@@ -1387,6 +1388,8 @@ export function createPanelHandler(ctx) {
         return true
       }
       if (await handleLoginCredentials(req, res, p, { projectRoot: cfg.paths.project, readBody, json, ok: panel.ok }))
+        return true
+      if (await handleQualityConfig(req, res, p, { projectRoot: cfg.paths.project, readBody, json, ok: panel.ok }))
         return true
       if ((req.method === 'GET' || req.method === 'PUT') && p === '/api/panel/onboarding') {
         if (req.method === 'PUT') {

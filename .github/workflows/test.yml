@@ -74,6 +74,7 @@ jobs:
           python -m pip install playwright==1.64.1
           python -m playwright install --with-deps chromium
           python test/codex-mailbox-browser-test.py
+          python test/codex-registration-browser-test.py
           node --input-type=module -e "import {SLOT_SUPERVISOR} from './src/lib/oauth/codex-mailbox-runtime.mjs'; process.stdout.write(SLOT_SUPERVISOR)" > "$RUNNER_TEMP/mailbox-supervisor.py"
           MAILBOX_SUPERVISOR_SOURCE="$RUNNER_TEMP/mailbox-supervisor.py" python test/codex-mailbox-supervisor-test.py
       - name: web

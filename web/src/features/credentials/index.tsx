@@ -7,7 +7,6 @@ import { isCodexVm } from '@/lib/vm-kind'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
-import { PageHeader } from '@/components/page-header'
 import { loginLabel } from '@/features/vm/codex-password-panel'
 import { vmsListQueryOptions } from '@/features/vm/queries'
 
@@ -107,10 +106,10 @@ export function CredentialsPage() {
     item.email.toLowerCase().includes(query.trim().toLowerCase())
   )
   return (
-    <PageHeader
-      title='账号池'
-      description='先导入凭据，再绑定到虚拟机；在虚拟机内点击登录，使用该槽位的完整环境完成授权。'
-    >
+    <section aria-label='账号凭据'>
+      <p className='mb-4 text-sm text-muted-foreground'>
+        先导入凭据，再绑定到虚拟机；在虚拟机内点击登录，使用该槽位的完整环境完成授权。
+      </p>
       <div className='mb-4 space-y-3 rounded-lg border p-4'>
         <label className='block space-y-2 text-sm'>
           <span className='font-medium'>导入微软邮箱凭据或 GPT 密码及 2FA</span>
@@ -265,6 +264,6 @@ export function CredentialsPage() {
           </p>
         )}
       </div>
-    </PageHeader>
+    </section>
   )
 }

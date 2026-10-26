@@ -294,6 +294,128 @@ class BrowserFixtureTests(unittest.TestCase):
         with self.assertRaisesRegex(mod.FlowError, 'takeover_required'):
             self.flow.control({'op': 'text', 'text': 'blocked'})
 
+    def test_saved_account_choice_matches_email_and_phone_verification_keeps_browser_open(self):
+        self.context.unroute('**/*')
+        seen = []
+        def route(request):
+            parsed = urlparse(request.request.url)
+            seen.append(parsed.path)
+            if parsed.path == '/choose-an-account':
+                body = '<a role="button" href="/wrong-account">Other other@example.com</a><a role="button" href="/add-phone">' + self.flow.email + '</a>'
+            elif parsed.path == '/add-phone':
+                body = '<p>Verify your phone number</p><input type="tel">'
+            elif parsed.path == '/consent':
+                body = '<p>Authorize Codex</p><a role="button" href="http://localhost:1455/auth/callback?state=fixture&code=mock-authorization">Allow</a>'
+            else:
+                return request.abort()
+            request.fulfill(content_type='text/html', body=body)
+        self.context.route('**/*', route)
+        self.flow.mode = 'password_totp'
+        self.flow.payload['auth_url'] = 'https://auth.openai.com/choose-an-account'
+        original_check = self.flow.check
+        pauses = []
+        def check():
+            if self.flow.paused:
+                self.assertFalse(self.flow.active_page.is_closed())
+                self.assertEqual(urlparse(self.flow.active_page.url).path, '/add-phone')
+                pauses.append('phone')
+                # The operator completes the provider-owned verification UI.
+                self.flow.active_page.goto('https://auth.openai.com/consent')
+                self.flow.paused = False
+            original_check()
+        self.flow.check = check
+        self.assertIn('mock-authorization', self.flow.authorize(self.context))
+        self.assertEqual(pauses, ['phone'])
+        self.assertNotIn('/wrong-account', seen)
+
+    def test_password_submission_waits_for_readonly_form_to_redirect_to_mfa(self):
+        self.context.unroute('**/*')
+        submissions = []
+        def route(request):
+            parsed = urlparse(request.request.url)
+            if parsed.path == '/start':
+                body = '<input type="password"><button type="button" onclick="window.submissions++;document.querySelector(\'input\').readOnly=true;setTimeout(()=>location.href=\'https://auth.openai.com/mfa\',250)">Continue</button><script>window.submissions=0</script>'
+            elif parsed.path == '/mfa':
+                body = '<p>Authenticator two-factor verification</p>' + self.form('https://auth.openai.com/consent', 'code')
+            elif parsed.path == '/consent':
+                body = '<p>Authorize Codex</p><a role="button" href="http://localhost:1455/auth/callback?state=fixture&code=mock-authorization">Allow</a>'
+            else:
+                return request.abort()
+            request.fulfill(content_type='text/html', body=body)
+        self.context.route('**/*', route)
+        self.flow.mode = 'password_totp'
+        self.flow.payload['totp_secret'] = 'JBSWY3DPEHPK3PXP'
+        original_submit = self.flow.submit
+        def submit(page):
+            if page.locator('input[type="password"]:visible').count():
+                submissions.append('password')
+            original_submit(page)
+        self.flow.submit = submit
+        result = self.flow.authorize(self.context)
+        self.assertIn('mock-authorization', result)
+        self.assertEqual(submissions, ['password'])
+
+    def test_login_submit_uses_focused_form_instead_of_background_composer_or_close(self):
+        page = self.context.new_page()
+        page.set_content('''
+            <form onsubmit="event.preventDefault();window.sent='composer'">
+              <input><button type="submit" aria-label="Send message" disabled></button>
+            </form>
+            <div role="dialog">
+              <button type="submit" aria-label="Close" onclick="window.sent='close'"></button>
+              <form onsubmit="event.preventDefault();window.sent='login'">
+                <input type="email"><button type="submit">Continue</button>
+              </form>
+            </div>
+        ''')
+        page.locator('input[type="email"]').fill('fixture@example.com')
+        self.flow.submit(page)
+        self.assertEqual(page.evaluate('window.sent'), 'login')
+        # Some provider dialogs do not wrap their email control in a form.
+        page.set_content('''
+            <button type="submit" aria-label="Send message" disabled></button>
+            <div role="dialog"><button type="submit" aria-label="Close" onclick="window.sent='close'"></button>
+            <input type="email"><button type="button" onclick="window.sent='continue'">Continue</button></div>
+        ''')
+        page.locator('input[type="email"]').fill('fixture@example.com')
+        self.flow.submit(page)
+        self.assertEqual(page.evaluate('window.sent'), 'continue')
+        page.get_by_role('button', name='Continue', exact=True).evaluate('(button) => button.disabled = true')
+        page.evaluate('window.sent = null')
+        with self.assertRaisesRegex(mod.FlowError, 'browser_submit_unavailable'):
+            self.flow.submit(page)
+        self.assertIsNone(page.evaluate('window.sent'))
+
+    def test_remote_clipboard_copies_real_page_text_and_requires_manual_control(self):
+        self.context.unroute('**/*')
+        self.context.route('**/*', lambda route: route.fulfill(content_type='text/html', body='''
+            <button onclick="navigator.clipboard.writeText('offline-clipboard-fixture')">Copy code</button>
+        '''))
+        mod.enable_browser_clipboard(self.context)
+        page = self.context.new_page()
+        page.goto('https://chatgpt.com/')
+        self.flow.context = self.context
+        self.flow.active_page = page
+        self.flow.remote = True
+        page.get_by_role('button', name='Copy code').click()
+        self.assertEqual(self.flow.control({'op': 'clipboard'}), {'text': 'offline-clipboard-fixture'})
+        self.flow.remote = False
+        with self.assertRaisesRegex(mod.FlowError, 'takeover_required'):
+            self.flow.control({'op': 'clipboard'})
+        self.flow.paused = True
+        self.assertEqual(self.flow.control({'op': 'clipboard'})['text'], 'offline-clipboard-fixture')
+        self.flow.paused = False
+        self.flow.remote = True
+        page.evaluate("() => navigator.clipboard.writeText('')")
+        with self.assertRaisesRegex(mod.FlowError, 'browser_clipboard_empty'):
+            self.flow.control({'op': 'clipboard'})
+        page.evaluate("() => navigator.clipboard.writeText('中'.repeat(6000))")
+        with self.assertRaisesRegex(mod.FlowError, 'browser_clipboard_too_large'):
+            self.flow.control({'op': 'clipboard'})
+        page.goto('https://unsupported.example/')
+        with self.assertRaisesRegex(mod.FlowError, 'browser_url_not_allowed'):
+            self.flow.control({'op': 'clipboard'})
+
     def subscription_fixture(self, immediate_charge=False, expired=False):
         self.context.unroute('**/*')
         state = {'enabled': True, 'changes': 0}

@@ -71,6 +71,7 @@ for (const credential of [false, true]) {
 
 test('power-on persists the nested runtime returned by Codex boot', async (t) => {
   const { file, options } = fixture(t)
+  patchVmRecord(options.projectRoot, options.id, { platform: 'openai', family: 'codex' })
   const runtime = { type: 'docker', stopped: false, pid: 99, started_at: 'new' }
   const result = await powerOnSlot({
     ...options,
@@ -78,6 +79,10 @@ test('power-on persists the nested runtime returned by Codex boot', async (t) =>
   })
   assert.equal(result.ok, true)
   assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')).runtime, runtime)
+  const saved = JSON.parse(fs.readFileSync(file, 'utf8'))
+  assert.equal(saved.status, 'running')
+  assert.equal(saved.schedulable, false)
+  assert.equal(saved.schedule_disabled_reason, 'no_credential')
 })
 
 test('failed power-on never publishes successful runtime metadata', async (t) => {

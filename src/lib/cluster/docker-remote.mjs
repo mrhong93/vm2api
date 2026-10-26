@@ -497,6 +497,10 @@ export async function inspectNetworkOrNull(connect, name) {
   return JSON.parse(res.body.toString('utf8'))
 }
 
+export async function listNetworks(connect) {
+  return dockerJson(connect, { path: '/networks', timeoutMs: 15_000 })
+}
+
 export async function createNetwork(connect, body) {
   const res = await dockerRequest(connect, { method: 'POST', path: '/networks/create', body, timeoutMs: 30_000 })
   // 409: a concurrent create won; the caller re-inspects.

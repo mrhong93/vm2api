@@ -28,6 +28,7 @@ import {
   proxyKey,
 } from '../vm/egress.mjs'
 import { OS_CATALOG } from '../vm/os-catalog.mjs'
+import { allocateEgressSubnet, assertEgressSubnet } from '../vm/egress-subnet.mjs'
 import { REMOTE_KERNEL_ENTRY, resolveKernelDataplane } from '../vm/slot-engine.mjs'
 import { isCodexVm } from '../vm/vm-kind.mjs'
 import { proxyBlockedReason } from '../vm/proxy-policy.mjs'
@@ -53,6 +54,7 @@ import {
   imagePresent,
   inspectContainerOrNull,
   inspectNetworkOrNull,
+  listNetworks,
   connectContainerToNetwork,
   disconnectContainerFromNetwork,
   removeContainer,
@@ -338,13 +340,18 @@ export function remoteIptablesScript(plan, { sudo = false } = {}) {
   return out.join('\n')
 }
 
-async function ensureRemoteNetwork(docker, { name, bridge, masquerade, labels = {} }) {
+async function ensureRemoteNetwork(session, { name, bridge, masquerade, labels = {} }) {
+  const docker = session.docker
   let info = await inspectNetworkOrNull(docker, name)
   if (!info) {
+    const networks = await listNetworks(docker)
+    const routeResult = await runRemote(session.client, 'ip -j -4 route show table all')
+    const subnet = allocateEgressSubnet({ networks, routes: JSON.parse(routeResult) })
     await createNetwork(docker, {
       Name: name,
       Driver: 'bridge',
       EnableIPv6: false,
+      IPAM: { Driver: 'default', Config: [{ Subnet: subnet }] },
       Labels: labels,
       Options: {
         'com.docker.network.bridge.name': bridge,
@@ -356,6 +363,7 @@ async function ensureRemoteNetwork(docker, { name, bridge, masquerade, labels = 
   }
   const subnet = info?.IPAM?.Config?.[0]?.Subnet || ''
   if (!subnet) throw Object.assign(new Error(`egress network ${name} has no subnet`), { code: 'egress_network_failed' })
+  assertEgressSubnet(subnet)
   const gateway = info.IPAM.Config[0].Gateway || gatewayFromSubnet(subnet)
   return { name, subnet, gateway, bridge }
 }
@@ -440,7 +448,7 @@ export async function ensureRemoteEgress(session, vm, { imageRef, binaryDigest =
   if (blocked) return { ok: false, code: blocked, error: blocked }
   if (isLocalEgressProxy(proxy)) {
     const id = proxy?.id || LOCAL_EGRESS_ID
-    const net = await ensureRemoteNetwork(session.docker, {
+    const net = await ensureRemoteNetwork(session, {
       name: networkName(id),
       bridge: bridgeName(id),
       masquerade: true,
@@ -460,7 +468,7 @@ export async function ensureRemoteEgress(session, vm, { imageRef, binaryDigest =
   // enabled independently of a slot start/update.
   const slotBin = shellQuote(`${remoteSlotDir(session.host, vm.id)}/slot-bin`)
   await runRemote(session.client, `umask 077 && mkdir -p ${slotBin} && chmod 755 ${slotBin}`)
-  const net = await ensureRemoteNetwork(session.docker, {
+  const net = await ensureRemoteNetwork(session, {
     name: names.network,
     bridge: names.bridge,
     masquerade: false,

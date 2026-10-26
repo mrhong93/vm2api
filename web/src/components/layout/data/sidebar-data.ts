@@ -15,6 +15,7 @@ import {
   Settings,
   ShieldAlert,
   Sparkles,
+  Workflow,
 } from 'lucide-react'
 import type { NavGroup, NavItem, SidebarData } from '../types'
 
@@ -37,7 +38,7 @@ const ALL_GROUPS: NavGroup[] = [
       { title: '导入', url: '/import', icon: Download },
       { title: '规格', url: '/specs', icon: Cpu },
       { title: '代理', url: '/proxies', icon: Cable },
-      { title: '账号池', url: '/credentials', icon: KeyRound },
+      { title: '智能运维', url: '/credentials', icon: Workflow },
     ],
   },
   {

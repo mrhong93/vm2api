@@ -53,6 +53,24 @@ export function createRateLimiter({ capacity = 60, refillPerSec = 1 } = {}) {
   }
 }
 
+/** Authenticated screen polling must not starve ordinary panel actions. */
+export function createPanelRateLimiter({ allowDefault }) {
+  const allowBrowser = createRateLimiter({ capacity: 60, refillPerSec: 5 })
+  const allowCancel = createRateLimiter({ capacity: 10, refillPerSec: 1 })
+  return function allow(user, req) {
+    const key = 'panel:' + user
+    const pathname = String(req.url || '').split('?', 1)[0]
+    const login = /^\/api\/panel\/vms\/[^/]+\/oauth\/login(\/control|\/cancel)?$/.exec(pathname)
+    if (login) {
+      if (req.method === 'POST' && login[1] === '/cancel') return allowCancel(key)
+      if ((req.method === 'GET' && !login[1]) || (req.method === 'POST' && login[1] === '/control')) {
+        return allowBrowser(key)
+      }
+    }
+    return allowDefault(key)
+  }
+}
+
 export const HOP_BY_HOP = new Set([
   'connection',
   'keep-alive',

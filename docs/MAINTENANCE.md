@@ -26,7 +26,7 @@ ohno1007 的原提交还包含协议、计费、模型指纹、订阅管理等�
 
 ## 账号密码导入
 
-在导航“账号池”中导入，每批 1–100 个账号：
+在导航“智能运维 → 账号凭据”中导入，每批 1–100 个账号：
 
 ```text
 fixture@outlook.com---mailbox-fixture-password
@@ -37,7 +37,7 @@ fixture@example.com----gpt-fixture-password----JBSWY3DPEHPK3PXP
 
 导入和绑定不会启动浏览器。选择槽位并明确点击“登录”后才开始授权；首次成功前不自动重新登录。保存的数据使用现有数据库密钥加密，列表不返回密码或 TOTP。设置数据库密钥是必需的，不能通过关闭加密来导入。租户只能查看和使用自己的凭据、操作自己的槽位；只管理调度的 super 角色没有凭据操作权限。
 
-登录需要槽位已启用调度并绑定可用出口。验证码或人工验证可通过该槽位的远程屏幕接管；不使用控制面网络代替槽位网络。首次启用空槽位需要明确点击登录，关闭调度的现有槽位不被自动开启。
+自 v2.0.2，手动登录需要槽位已开机并绑定可用出口，无需开启调度；自动任务仍要求开启调度。验证码或人工验证可通过该槽位的远程屏幕接管；不使用控制面网络代替槽位网络。首次启用空槽位需要明确点击登录，关闭调度的现有槽位不被自动开启。
 
 自 v2.0.1，登录和远程浏览器的语言、时区取所选槽位的 `locale` / `timezone`（旧记录其次取槽位 fingerprint，仍缺少则从槽内 LANG/LC_ALL/TZ 或系统时区解析），不会取控制面或操作者电脑设置。`zh_CN.UTF-8`、`ja_JP.UTF-8` 等转为浏览器语言标签；C/POSIX 没有地区语言，对应 Chromium 英文 `en-US`。浏览器使用槽位原有透明代理网络，显式忽略额外系统代理，不重复叠加 SOCKS。网络必须与绑定出口对应，否则拒绝登录。OAuth 最后换票仍由控制面经所选槽位对应出口执行，本补丁没有改变换票路径。
 
@@ -54,3 +54,9 @@ fixture@example.com----gpt-fixture-password----JBSWY3DPEHPK3PXP
 官方 1.x 的更新按钮仍查询官方仓库，不能靠它自动发现本仓库的 2.x。首次部署必须明确切换控制面镜像到 `ghcr.io/zhang2580384/vm2api:v2.0.0`，保留现有 Compose override、环境变量、端口和数据挂载。此后 2.x 的更新按钮才使用本仓库 Release 和镜像。
 
 原环境显式设置的 `VM2API_IMAGE` 也应切换。自有更新脚本会对齐镜像仓库，避免只改 tag 后拉取不存在的官方 2.x 镜像。挂载的 IPv6 补丁应先比对内容，再决定是否移除；不要直接删除 override。
+
+## v2.0.2 新增能力
+
+槽位注册与恢复见 [CODEX_REGISTRATION.md](CODEX_REGISTRATION.md)，运行包管理见 [BROWSER_ENVIRONMENT.md](BROWSER_ENVIRONMENT.md)，质量运维配置预览和执行边界见 [OPERATIONS_PREVIEW.md](OPERATIONS_PREVIEW.md)。糖果题原文及判定参考 [ranxi2001/sub2api v2.17.3](https://github.com/ranxi2001/sub2api/tree/v2.17.3)，保留来源说明；门票探针尚未移植。
+
+出口网络从显式地址池分配 /24，并避开已有 Docker 网络及宿主路由。站点自有保留范围通过 `KIN_EGRESS_RESERVED_CIDRS` 配置，逗号分隔 IPv4 CIDR；公开版本不内置某一部署的内网拓扑。已有冲突网络会拒绝使用，不自动迁移。内网部署升级前应在私有环境文件设置保留范围。

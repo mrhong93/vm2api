@@ -12,7 +12,7 @@ import {
 } from '../transport/rust-kernel-supervisor.mjs'
 import { ensureCodexKernel, stopCodexKernel, writeCodexKernelConfig } from '../transport/codex-kernel-supervisor.mjs'
 import { runtimeKind, isKvmRuntime } from './runtime-kind.mjs'
-import { getVm, listVms, isCodexVm, persistVmRuntime } from './vm-registry.mjs'
+import { getVm, listVms, isCodexVm, persistVmRuntime, vmHasSchedulableCredential } from './vm-registry.mjs'
 import { resolveInferenceEngine } from './slot-engine.mjs'
 import {
   containerHasKernelMount,
@@ -51,6 +51,9 @@ export async function startSlotReady(vm, projectRoot, opts = {}) {
     const boot = await (opts.ops?.startSlot || startSlot)(vm, projectRoot, opts)
     if (!boot?.ok) return boot
     persistNodeRuntime(vm, projectRoot, boot)
+    if (!vmHasSchedulableCredential(vm, projectRoot)) {
+      return { ok: true, engine: 'codex', docker: boot, kernel: { ok: true, skipped: true, reason: 'no_credential' } }
+    }
     const kernel = await ensureSlotInferenceRuntime(vm, projectRoot, opts)
     if (!kernel.ok) return kernel
     return { ok: true, engine: 'codex', docker: boot, kernel }

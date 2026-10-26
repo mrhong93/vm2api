@@ -40,6 +40,52 @@ function fakeDocker(onJob) {
     },
   }
 }
+
+test('registration checkpoint is acknowledged only after durable handling, and its result stays internal', async () => {
+  for (const fail of [false, true]) {
+    const checkpoints = []
+    const mock = fakeDocker((job, child) => {
+      if (job.action === 'register')
+        queueMicrotask(() =>
+          child.stdout.write(
+            JSON.stringify({
+              event: 'registration_checkpoint',
+              data: { phase: 'totp_pending', totp_secret: 'fixture-secret-only-stdin' },
+            }) + '\n',
+          ),
+        )
+      if (job.registration_checkpoint_saved)
+        queueMicrotask(() => {
+          child.stdout.write(
+            JSON.stringify({ event: 'result', data: { email: 'fixture@example.com', totp_verified: true } }) + '\n',
+          )
+          child.emit('close', 0)
+        })
+      if (job.cancel) queueMicrotask(() => child.emit('close', 1))
+    })
+    const promise = runMailboxSlotProcess({
+      projectRoot: process.cwd(),
+      vm: { id: 'vm-01' },
+      action: 'register',
+      payload: { operation: 'register', password: 'fixture-password-only-stdin' },
+      onCheckpoint: (value) => {
+        if (fail) throw new Error('private storage failure')
+        checkpoints.push(value)
+      },
+      ...mock,
+    })
+    if (fail) {
+      await assert.rejects(promise, /registration_checkpoint_failed/)
+      assert.ok(!mock.calls.some(({ job }) => job.registration_checkpoint_saved))
+    } else {
+      assert.equal((await promise).totp_verified, true)
+      assert.equal(checkpoints.length, 1)
+      assert.ok(mock.calls.some(({ job }) => job.registration_checkpoint_saved))
+    }
+    assert.ok(!JSON.stringify(mock.calls.map(({ argv }) => argv)).includes('fixture-password-only-stdin'))
+    assert.ok(!JSON.stringify(mock.calls.map(({ argv }) => argv)).includes('fixture-secret-only-stdin'))
+  }
+})
 test('Docker and KVM use slot exec, secret only on stdin, callback NDJSON is buffered', async () => {
   for (const type of ['docker', 'kvm']) {
     const mock = fakeDocker((job, child) => {

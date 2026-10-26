@@ -12,6 +12,7 @@ import { getDb, isDbOpen } from '../db/database.mjs'
 import { SettingsRepo } from '../db/repos/settings-repo.mjs'
 import { socksProxyUrl } from './socks-address.mjs'
 import { assertProxyAllowed, proxyBlockedReason } from './proxy-policy.mjs'
+import { allocateEgressSubnet, assertEgressSubnet } from './egress-subnet.mjs'
 
 export const EGRESS_BIN = process.env.KIN_EGRESS_BIN || '/opt/kin-gateway/bin/kin-egress'
 export const LOCAL_EGRESS_ID = 'px-local'
@@ -337,10 +338,21 @@ export function ensureEgressNetwork(proxyId, run = docker) {
   const br = bridgeName(proxyId)
   if (!name) return { ok: false, error: 'proxy_id_required' }
   const existing = inspectEgressNetwork(proxyId, run)
-  if (existing?.subnet) return { ok: true, ...existing, reused: true }
+  let subnet
+  try {
+    if (existing?.subnet) {
+      assertEgressSubnet(existing.subnet)
+      return { ok: true, ...existing, reused: true }
+    }
+    subnet = availableEgressSubnet(run)
+  } catch (error) {
+    return { ok: false, error: error.message, code: error.code || 'egress_subnet_inventory_failed' }
+  }
   const created = run([
     'network',
     'create',
+    '--subnet',
+    subnet,
     '--ipv6=false',
     '--opt',
     `com.docker.network.bridge.name=${br}`,
@@ -355,7 +367,26 @@ export function ensureEgressNetwork(proxyId, run = docker) {
   }
   const info = inspectEgressNetwork(proxyId, run)
   if (!info?.subnet) return { ok: false, error: 'egress network missing subnet' }
+  try {
+    assertEgressSubnet(info.subnet)
+  } catch (error) {
+    return { ok: false, error: error.message, code: error.code }
+  }
   return { ok: true, ...info, reused: false }
+}
+
+function availableEgressSubnet(run) {
+  const listed = run(['network', 'ls', '-q'])
+  if (!listed.ok) throw new Error('cannot inventory Docker networks for egress subnet allocation')
+  const ids = String(listed.stdout || '')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+  const inspected = ids.length ? run(['network', 'inspect', ...ids]) : { ok: true, stdout: '[]' }
+  const routes = sh(['ip', '-j', '-4', 'route', 'show', 'table', 'all'], { timeout: 8_000 })
+  if (!inspected.ok || !routes.ok)
+    throw new Error('cannot inventory Docker networks or host routes for egress subnet allocation')
+  return allocateEgressSubnet({ networks: JSON.parse(inspected.stdout), routes: JSON.parse(routes.stdout) })
 }
 
 function applyIptables(plan, runIptables = iptables) {
@@ -742,10 +773,21 @@ export function ensureLocalProxyEgress(proxy, { runDocker = docker } = {}) {
   const br = bridgeName(proxyId)
   if (!name) return { ok: false, error: 'proxy_id_required' }
   const existing = inspectEgressNetwork(proxyId, runDocker)
-  if (existing?.subnet) return { ok: true, mode: 'local', ...existing, reused: true, proxy_id: proxyId }
+  let subnet
+  try {
+    if (existing?.subnet) {
+      assertEgressSubnet(existing.subnet)
+      return { ok: true, mode: 'local', ...existing, reused: true, proxy_id: proxyId }
+    }
+    subnet = availableEgressSubnet(runDocker)
+  } catch (error) {
+    return { ok: false, error: error.message, code: error.code || 'egress_subnet_inventory_failed' }
+  }
   const created = runDocker([
     'network',
     'create',
+    '--subnet',
+    subnet,
     '--ipv6=false',
     '--opt',
     `com.docker.network.bridge.name=${br}`,
@@ -760,6 +802,11 @@ export function ensureLocalProxyEgress(proxy, { runDocker = docker } = {}) {
   }
   const info = inspectEgressNetwork(proxyId, runDocker)
   if (!info?.subnet) return { ok: false, error: 'local egress network missing subnet' }
+  try {
+    assertEgressSubnet(info.subnet)
+  } catch (error) {
+    return { ok: false, error: error.message, code: error.code }
+  }
   return { ok: true, mode: 'local', ...info, reused: false, proxy_id: proxyId }
 }
 

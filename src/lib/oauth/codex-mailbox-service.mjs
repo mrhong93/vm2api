@@ -1,5 +1,5 @@
 import crypto from 'node:crypto'
-import { getVm, patchVmRecord, setVmSchedulable } from '../vm/vm-registry.mjs'
+import { getVm, patchVmRecord } from '../vm/vm-registry.mjs'
 import { isCodexVm } from '../vm/vm-kind.mjs'
 import { readCodexAccounts, upsertCodexAccount, codexAccessExpiresAt } from '../vm/codex-slot.mjs'
 import { hasBoundExit } from '../vm/egress.mjs'
@@ -9,9 +9,11 @@ import { invalidateLiveCredentialCache } from '../admin/panel-live-credentials.m
 import { openaiIdentityFromOauthTokens } from './openai-jwt.mjs'
 import { ensureCodexCredential } from './codex-credential-refresh.mjs'
 import { generateCodexAuthUrl, exchangeCodexAuthCode, discardCodexAuthSession } from './codex-oauth.mjs'
-import { createMailboxStore, mailboxError } from './codex-mailbox-store.mjs'
+import { createMailboxStore, mailboxError, normalizeLoginEmail, normalizeTotpSecret } from './codex-mailbox-store.mjs'
+import { createRegistrationStore } from './codex-registration-store.mjs'
 import { assertMailboxSlotNetwork, runMailboxSlotProcess } from './codex-mailbox-runtime.mjs'
 import { mailboxAuthFailure, clearMailboxAuthFailure } from './codex-mailbox-events.mjs'
+import { manageMailboxBrowserRuntime } from './mailbox-browser-environment.mjs'
 
 const instances = new Map()
 const NEEDS_ATTENTION = new Set([
@@ -32,10 +34,12 @@ const NEEDS_ATTENTION = new Set([
 export function createCodexMailboxService({
   projectRoot,
   store = createMailboxStore(projectRoot),
+  registrations = createRegistrationStore(projectRoot),
   getSlot = (id) => getVm(projectRoot, id),
   accountFor = (id) => readCodexAccounts(projectRoot, id)[0] || {},
   checkNetwork = assertMailboxSlotNetwork,
   runSlot = runMailboxSlotProcess,
+  manageRuntime = manageMailboxBrowserRuntime,
   now = Date.now,
   generate = generateCodexAuthUrl,
   exchange = exchangeCodexAuthCode,
@@ -45,6 +49,7 @@ export function createCodexMailboxService({
 } = {}) {
   const jobs = new Map()
   const transientStates = new Map()
+  const runtimeStates = new Map()
   const identityKey = (email) =>
     crypto
       .createHash('sha256')
@@ -59,11 +64,24 @@ export function createCodexMailboxService({
     if (!vm || !isCodexVm(vm)) throw mailboxError('codex_slot_required', 404)
     return vm
   }
+  const availableSlot = (id) => {
+    const vm = readSlot(id)
+    if (!['running', 'ok'].includes(vm.status)) throw mailboxError('slot_not_running', 409)
+    if (!hasBoundExit(vm.proxy)) throw mailboxError('proxy_required', 409)
+    return vm
+  }
   const enabledSlot = (id) => {
     const vm = readSlot(id)
     if (vm.schedulable === false) throw mailboxError('slot_resting', 409)
-    if (!['running', 'ok'].includes(vm.status)) throw mailboxError('slot_not_running', 409)
-    if (!hasBoundExit(vm.proxy)) throw mailboxError('proxy_required', 409)
+    return availableSlot(id)
+  }
+  const jobSlot = (id) => {
+    const job = jobs.get(id)
+    if (!job?.allowResting) return enabledSlot(id)
+    const vm = availableSlot(id)
+    // A task explicitly started while resting may finish without enabling
+    // scheduling. Once scheduling is enabled, disabling it cancels as usual.
+    if (vm.schedulable !== false) job.allowResting = false
     return vm
   }
   const publicState = (id) => {
@@ -88,23 +106,30 @@ export function createCodexMailboxService({
         : null
     return {
       ...config,
+      registration: registrations.summary(id),
       subscription: subscription
         ? { enabled: subscription.enabled, checked_at: subscription.checked_at, period_end: subscription.period_end }
         : null,
-      browser: { active: jobs.has(id), ready: !!jobs.get(id)?.send, remote: jobs.get(id)?.remote === true },
+      browser: {
+        active: jobs.has(id) && !jobs.get(id)?.maintenance,
+        ready: !!jobs.get(id)?.send,
+        remote: jobs.get(id)?.remote === true,
+      },
       state: state || { running: false, status: 'idle', stage: 'idle' },
     }
   }
   const update = (id, patch) => {
     const value = { ...(jobs.get(id)?.state || transientStates.get(id) || store.state(id) || {}), ...patch }
     if (jobs.has(id)) jobs.get(id).state = value
-    if (store.read(id)) store.writeState(id, value)
-    else transientStates.set(id, value)
+    if (store.read(id)) {
+      store.writeState(id, value)
+      transientStates.delete(id)
+    } else transientStates.set(id, value)
     return value
   }
   const stillAllowed = (id, revision, signal) => {
     if (signal.aborted) throw mailboxError('login_cancelled', 409)
-    const vm = enabledSlot(id)
+    const vm = jobSlot(id)
     if (store.read(id)?.revision !== revision) throw mailboxError('mailbox_config_changed', 409)
     return vm
   }
@@ -223,30 +248,26 @@ export function createCodexMailboxService({
       jobs.delete(id)
     }
   }
-  function start(id, { automatic = false, activateEmpty = false } = {}) {
+  function start(id, { automatic = false } = {}) {
     if (stopped) throw mailboxError('service_stopped', 409)
     if (jobs.has(id)) {
-      if (jobs.get(id).remote) throw mailboxError('mailbox_login_busy', 409)
+      if (jobs.get(id).remote || jobs.get(id).maintenance || jobs.get(id).registration)
+        throw mailboxError('mailbox_login_busy', 409)
       return publicState(id)
     }
     if (jobs.size) throw mailboxError('mailbox_login_busy', 409)
     const login = store.read(id)
     if (!login) throw mailboxError('mailbox_not_configured', 409)
-    const current = readSlot(id)
-    // This opt-in is only for an explicit first fill of an empty slot.
-    if (
-      !automatic &&
-      activateEmpty &&
-      current.schedulable === false &&
-      ['no_credential', null, undefined].includes(current.schedule_disabled_reason) &&
-      !accountFor(id).access_token &&
-      !accountFor(id).refresh_token
-    ) {
-      setVmSchedulable(projectRoot, id, true, null, { preserveStatus: true, source: 'manual' })
-    }
-    enabledSlot(id)
+    const current = automatic ? enabledSlot(id) : availableSlot(id)
     const controller = new AbortController()
-    const entry = { controller, send: null, promise: null, pending: new Map(), revision: login.revision }
+    const entry = {
+      controller,
+      send: null,
+      promise: null,
+      pending: new Map(),
+      revision: login.revision,
+      allowResting: !automatic && current.schedulable === false,
+    }
     jobs.set(id, entry)
     update(id, {
       running: true,
@@ -259,6 +280,165 @@ export function createCodexMailboxService({
       finished_at: null,
     })
     entry.promise = Promise.resolve().then(() => execute(id, entry, login))
+    return publicState(id)
+  }
+  function emptyRegistrationSlot(id, revision, signal) {
+    if (signal.aborted) throw mailboxError('login_cancelled', 409)
+    const vm = jobs.has(id) ? jobSlot(id) : availableSlot(id)
+    const account = accountFor(id)
+    if (store.read(id) || account.access_token || account.refresh_token || account.email)
+      throw mailboxError('registration_empty_slot_required', 409)
+    if (store.read(id)?.revision !== revision) throw mailboxError('mailbox_config_changed', 409)
+    return vm
+  }
+  function register(id, input, owner) {
+    if (stopped) throw mailboxError('service_stopped', 409)
+    if (jobs.size) throw mailboxError('mailbox_login_busy', 409)
+    if (!owner?.id) throw mailboxError('credential_owner_required', 403)
+    const email = normalizeLoginEmail(input)
+    emptyRegistrationSlot(id, undefined, new AbortController().signal)
+    let draft = registrations.read(id, owner)
+    if (draft && draft.email !== email && draft.phase !== 'draft')
+      throw mailboxError('registration_recovery_pending', 409)
+    if (
+      store.pool.list({ id: draft?.owner || owner.id }).some((record) => {
+        if (record.email !== email || record.id === draft?.credential_id) return false
+        if (draft?.phase === 'mfa_verified') {
+          const saved = store.pool.read(record.id, { id: draft.owner })
+          if (saved.password === draft.password && saved.totp_secret === draft.totp_secret) return false
+        }
+        return true
+      })
+    )
+      throw mailboxError('registration_email_exists', 409)
+    if (!draft || draft.email !== email) {
+      // Fixed character classes plus 192 random bits; no batch delimiters.
+      draft = registrations.save(id, {
+        email,
+        password: `Aa9!${crypto.randomBytes(24).toString('hex')}`,
+        owner: owner.id,
+        phase: 'draft',
+        created_at: new Date(now()).toISOString(),
+      })
+    }
+    const entry = {
+      registration: true,
+      allowResting: readSlot(id).schedulable === false,
+      controller: new AbortController(),
+      pending: new Map(),
+      send: null,
+      revision: undefined,
+    }
+    jobs.set(id, entry)
+    update(id, {
+      running: true,
+      status: 'running',
+      stage: 'preparing_browser',
+      automatic: false,
+      job_id: crypto.randomUUID(),
+      error_code: null,
+      started_at: new Date(now()).toISOString(),
+      finished_at: null,
+      next_attempt_at: null,
+    })
+    entry.promise = Promise.resolve().then(async () => {
+      try {
+        let vm = emptyRegistrationSlot(id, entry.revision, entry.controller.signal)
+        if (['mfa_verified', 'pooled'].includes(draft.phase) && draft.password_verified !== true)
+          throw mailboxError('registration_password_unconfirmed', 409)
+        if (!['mfa_verified', 'pooled'].includes(draft.phase)) {
+          await checkNetwork(vm)
+          await runSlot({ projectRoot, vm, action: 'prepare', signal: entry.controller.signal })
+          vm = emptyRegistrationSlot(id, entry.revision, entry.controller.signal)
+          await checkNetwork(vm)
+          const result = await runSlot({
+            projectRoot,
+            vm,
+            action: 'register',
+            signal: entry.controller.signal,
+            payload: {
+              operation: 'register',
+              email,
+              password: draft.password,
+              registration_phase: draft.phase,
+              password_verified: draft.password_verified === true,
+              totp_secret: draft.totp_secret || '',
+            },
+            onStage: (stage) => update(id, { stage }),
+            onControl: (send) => {
+              entry.send = send
+            },
+            onEvent: (event) => receive(entry, event),
+            onCheckpoint: (data) => {
+              emptyRegistrationSlot(id, entry.revision, entry.controller.signal)
+              if (normalizeLoginEmail(data?.email) !== email) throw mailboxError('authorized_email_mismatch', 409)
+              const transitions = {
+                draft: ['submitted'],
+                submitted: ['account_created'],
+                account_created: ['password_submitted', 'password_set'],
+                password_submitted: ['password_submitted', 'password_set'],
+                password_set: ['totp_pending'],
+                totp_pending: draft.password_verified === true ? ['totp_pending'] : ['password_submitted'],
+              }
+              if (!transitions[draft.phase]?.includes(data.phase))
+                throw mailboxError('registration_checkpoint_failed', 409)
+              if (data.phase === 'password_set' && data.password_verified !== true)
+                throw mailboxError('registration_password_unconfirmed', 409)
+              const secret = data.phase === 'totp_pending' ? normalizeTotpSecret(data.totp_secret) : draft.totp_secret
+              draft = registrations.save(id, {
+                ...draft,
+                phase: data.phase,
+                password_verified: data.phase === 'password_set' || draft.password_verified === true,
+                totp_secret: secret,
+              })
+            },
+          })
+          entry.send = null
+          emptyRegistrationSlot(id, entry.revision, entry.controller.signal)
+          if (normalizeLoginEmail(result?.email) !== email) throw mailboxError('authorized_email_mismatch', 409)
+          if (result?.password_verified !== true || draft.password_verified !== true)
+            throw mailboxError('registration_password_unconfirmed', 409)
+          if (
+            result?.totp_verified !== true ||
+            draft.phase !== 'totp_pending' ||
+            normalizeTotpSecret(result.totp_secret) !== draft.totp_secret
+          )
+            throw mailboxError('registration_mfa_unconfirmed', 409)
+          draft = registrations.save(id, { ...draft, phase: 'mfa_verified' })
+        }
+        emptyRegistrationSlot(id, entry.revision, entry.controller.signal)
+        const credentialOwner = { id: draft.owner }
+        let credentialId = draft.credential_id
+        if (credentialId) {
+          const record = store.pool.read(credentialId, credentialOwner)
+          if (record.email !== email || record.password !== draft.password || record.totp_secret !== draft.totp_secret)
+            throw mailboxError('mailbox_config_changed', 409)
+        } else {
+          credentialId = store.pool.createRegistered(draft, credentialOwner).id
+          draft = registrations.save(id, { ...draft, phase: 'pooled', credential_id: credentialId })
+        }
+        // No await between the empty-slot check, binding, and revision update.
+        // OAuth failure retains the confirmed credentials for a manual retry.
+        store.bind(id, credentialId, credentialOwner)
+        entry.revision = store.read(id).revision
+        update(id, { stage: 'registration_authorizing' })
+        await execute(id, entry, store.read(id))
+      } catch (error) {
+        const code = /^[a-z_]{1,60}$/.test(error.code || '') ? error.code : 'browser_registration_failed'
+        update(id, {
+          running: false,
+          status: entry.controller.signal.aborted ? 'cancelled' : 'needs_attention',
+          stage: entry.controller.signal.aborted ? 'cancelled' : 'failed',
+          error_code: code,
+          finished_at: new Date(now()).toISOString(),
+          next_attempt_at: null,
+        })
+      } finally {
+        entry.send = null
+        closeRequests(entry)
+        jobs.delete(id)
+      }
+    })
     return publicState(id)
   }
   const cancel = (id) => {
@@ -288,7 +468,7 @@ export function createCodexMailboxService({
         )
   }
   function control(id, body) {
-    enabledSlot(id)
+    jobSlot(id)
     const entry = jobs.get(id)
     if (!entry?.send) throw mailboxError('browser_not_ready', 409)
     if (entry.controller.signal.aborted) throw mailboxError('browser_closed', 409)
@@ -303,10 +483,21 @@ export function createCodexMailboxService({
       'wheel',
       'key',
       'text',
+      'clipboard',
       'reload',
       'back',
     ]
     if (!allowed.includes(body?.op) || JSON.stringify(body).length > 12_000)
+      throw mailboxError('invalid_browser_operation')
+    const fields = {
+      tab: ['index'],
+      navigate: ['url'],
+      click: ['x', 'y', 'button'],
+      wheel: ['x', 'y'],
+      key: ['key'],
+      text: ['text'],
+    }
+    if (Object.keys(body).some((key) => key !== 'op' && !(fields[body.op] || []).includes(key)))
       throw mailboxError('invalid_browser_operation')
     if (entry.pending.size >= 4) throw mailboxError('browser_control_busy', 409)
     return new Promise((resolve, reject) => {
@@ -322,8 +513,12 @@ export function createCodexMailboxService({
   }
   function remote(id) {
     if (stopped) throw mailboxError('service_stopped', 409)
+    if (jobs.get(id)?.maintenance) throw mailboxError('mailbox_login_busy', 409)
+    if (jobs.has(id)) {
+      jobSlot(id)
+      return publicState(id)
+    }
     const vm = enabledSlot(id)
-    if (jobs.has(id)) return publicState(id)
     if (jobs.size) throw mailboxError('mailbox_login_busy', 409)
     const entry = {
       controller: new AbortController(),
@@ -481,10 +676,68 @@ export function createCodexMailboxService({
       ticking = false
     }
   }
+  const runtimeSlot = (id) => {
+    if (stopped) throw mailboxError('service_stopped', 409)
+    const vm = readSlot(id)
+    if (!['running', 'ok'].includes(vm.status)) throw mailboxError('slot_not_running', 409)
+    return vm
+  }
+  async function runtimeStatus(id) {
+    const vm = runtimeSlot(id)
+    if (jobs.get(id)?.maintenance) return runtimeStates.get(id)
+    const info = await manageRuntime({ projectRoot, vm, action: 'status' })
+    // A maintenance job may have started while the read-only probe was in flight.
+    if (jobs.get(id)?.maintenance) return runtimeStates.get(id)
+    const state = { ...runtimeStates.get(id), ...info, running: false }
+    runtimeStates.set(id, state)
+    return state
+  }
+  function runtime(id, action) {
+    if (!['install', 'uninstall'].includes(action)) throw mailboxError('invalid_browser_operation')
+    const vm = runtimeSlot(id)
+    if (jobs.size) throw mailboxError('mailbox_login_busy', 409)
+    const entry = { maintenance: true, controller: new AbortController(), pending: new Map() }
+    jobs.set(id, entry)
+    const updateRuntime = (patch) => runtimeStates.set(id, { ...runtimeStates.get(id), ...patch })
+    updateRuntime({
+      running: true,
+      stage: action === 'install' ? 'detecting_browser_os' : 'uninstalling_browser',
+      error_code: null,
+    })
+    entry.promise = Promise.resolve().then(async () => {
+      try {
+        runtimeSlot(id)
+        const info = await manageRuntime({
+          projectRoot,
+          vm,
+          action,
+          signal: entry.controller.signal,
+          onStage: (stage) => updateRuntime({ stage }),
+        })
+        updateRuntime({
+          ...info,
+          stage: action === 'install' ? 'browser_runtime_installed' : 'browser_runtime_removed',
+        })
+      } catch (error) {
+        updateRuntime({
+          stage: 'failed',
+          error_code: /^[a-z_]{1,60}$/.test(error.code || '') ? error.code : 'browser_runtime_operation_failed',
+        })
+      } finally {
+        updateRuntime({ running: false })
+        jobs.delete(id)
+      }
+    })
+    return runtimeStates.get(id)
+  }
   const guardJobs = () => {
     for (const [id, job] of jobs) {
       try {
-        enabledSlot(id)
+        if (job.maintenance) {
+          runtimeSlot(id)
+          continue
+        }
+        jobSlot(id)
         if (store.read(id)?.revision !== job.revision) job.controller.abort()
       } catch {
         job.controller.abort()
@@ -511,10 +764,26 @@ export function createCodexMailboxService({
       return publicState(id)
     },
     start,
+    register,
+    registrationReveal(id, owner) {
+      readSlot(id)
+      if (!owner?.id) throw mailboxError('credential_owner_required', 403)
+      const draft = registrations.read(id, owner)
+      if (!draft) throw mailboxError('registration_not_found', 404)
+      return {
+        email: draft.email,
+        password: draft.password,
+        totp_secret: draft.totp_secret || '',
+        password_verified: draft.password_verified === true,
+        mfa_verified: draft.password_verified === true && ['mfa_verified', 'pooled'].includes(draft.phase),
+      }
+    },
     cancel,
     tick,
     remote,
     control,
+    runtime,
+    runtimeStatus,
     session(id) {
       return browserTask(id, 'session')
     },
@@ -574,8 +843,18 @@ export function createCodexMailboxService({
     },
     verificationCode(id, code) {
       const job = jobs.get(id)
-      if (!job?.send || store.state(id)?.stage !== 'waiting_mfa') throw mailboxError('no_verification_pending', 409)
-      enabledSlot(id)
+      if (
+        !job?.send ||
+        ![
+          'waiting_mfa',
+          'registration_email_code',
+          'registration_password_email_code',
+          'registration_mfa_email_code',
+        ].includes(job.state?.stage)
+      )
+        throw mailboxError('no_verification_pending', 409)
+      if (job.controller.signal.aborted) throw mailboxError('browser_closed', 409)
+      jobSlot(id)
       if (!/^[A-Za-z0-9-]{4,12}$/.test(String(code || ''))) throw mailboxError('invalid_verification_code')
       job.send({ verification_code: String(code) })
       return publicState(id)

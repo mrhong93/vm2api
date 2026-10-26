@@ -17,6 +17,7 @@ import {
   extractApiKey,
   timingSafeEqualStr,
   createRateLimiter,
+  createPanelRateLimiter,
   verifyPanelSession,
   extractPanelToken,
   attachPanelAuth,
@@ -140,6 +141,7 @@ const allowRate = createRateLimiter({
   capacity: cfg.limits.rate_capacity,
   refillPerSec: cfg.limits.rate_refill,
 })
+const allowPanelRate = createPanelRateLimiter({ allowDefault: allowRate })
 
 // --- Persistent store (SQLite, sub2api-inspired) ---
 const dataDir = cfg.paths.data || path.join(cfg.paths.root, 'data')
@@ -726,7 +728,7 @@ function requireAuth(req, res) {
   // Panel session
   const session = verifyPanelSession(token)
   if (session) {
-    if (!allowRate('panel:' + session.user)) {
+    if (!allowPanelRate(session.user, req)) {
       return rejectAuth(
         req,
         res,

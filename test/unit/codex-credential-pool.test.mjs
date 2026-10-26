@@ -174,9 +174,12 @@ test('binding to a resting slot does not login, refresh, probe or activate sched
   assert.equal(h.slots[0].schedulable, false)
   assert.equal(h.service.status('vm-01').email, email)
   assert.equal(h.service.status('vm-01').login_armed, false)
-  assert.throws(() => h.service.start('vm-01'), /slot_resting/)
   assert.throws(() => h.service.remote('vm-01'), /slot_resting/)
   assert.throws(() => h.service.control('vm-01', { op: 'frame' }), /slot_resting/)
+  h.service.start('vm-01')
+  await h.service.settle()
+  assert.equal(h.service.status('vm-01').state.status, 'succeeded')
+  assert.equal(h.slots[0].schedulable, false)
 })
 test('binding an enabled slot remains idle until explicit login; worker uses selected slot and password/TOTP', async (t) => {
   const h = harness(t)
@@ -233,11 +236,98 @@ test('pool APIs permit tenants and admins but deny schedule-only operators', () 
     ['POST', '/api/panel/login-credentials/import'],
     ['POST', '/api/panel/login-credentials/cred-00000000-0000-0000-0000-000000000000/reveal'],
     ['POST', '/api/panel/vms/vm-01/oauth/login/bind'],
+    ['POST', '/api/panel/vms/vm-01/oauth/login/register'],
+    ['POST', '/api/panel/vms/vm-01/oauth/login/registration-reveal'],
+    ['GET', '/api/panel/vms/vm-01/oauth/login/browser-environment'],
+    ['POST', '/api/panel/vms/vm-01/oauth/login/browser-environment/install'],
+    ['POST', '/api/panel/vms/vm-01/oauth/login/browser-environment/uninstall'],
   ]) {
     assert.equal(authorizePanelRoute(method, path, 'user').ok, true)
     assert.equal(authorizePanelRoute(method, path, 'admin').ok, true)
     assert.equal(authorizePanelRoute(method, path, 'super').ok, false)
   }
+})
+
+test('browser environment routes check slot ownership before runtime access', async (t) => {
+  const h = harness(t)
+  fs.mkdirSync(path.join(h.projectRoot, 'vms'))
+  fs.writeFileSync(
+    path.join(h.projectRoot, 'vms/vm-01.json'),
+    JSON.stringify({
+      ...h.slots[0],
+      owner_user_id: owner.id,
+      schedulable: false,
+      status: 'stopped',
+    }),
+  )
+  let response,
+    userId = other.id
+  const handle = createPanelHandler({
+    cfg: { paths: { project: h.projectRoot } },
+    readBody,
+    requireAuth(req) {
+      req.panelUser = 'fixture-user'
+      req.panelRole = 'user'
+      req.panelUserId = userId
+      return true
+    },
+    json(_res, status, body) {
+      response = { status, body }
+    },
+  })
+  for (const [method, suffix] of [
+    ['GET', ''],
+    ['POST', '/install'],
+    ['POST', '/uninstall'],
+  ]) {
+    const request = async () => {
+      const req = Readable.from([])
+      req.method = method
+      await handle(
+        req,
+        { setHeader() {} },
+        new URL(`http://localhost/api/panel/vms/vm-01/oauth/login/browser-environment${suffix}`),
+      )
+      return response
+    }
+    userId = other.id
+    assert.equal((await request()).status, 404)
+    userId = owner.id
+    assert.equal((await request()).status, 409)
+    assert.equal(response.body.error.code, 'slot_not_running')
+  }
+  assert.deepEqual(h.calls, [])
+})
+
+test('registration routes check slot ownership before accessing drafts or starting a browser', async (t) => {
+  const h = harness(t)
+  fs.mkdirSync(path.join(h.projectRoot, 'vms'))
+  fs.writeFileSync(
+    path.join(h.projectRoot, 'vms/vm-01.json'),
+    JSON.stringify({ ...h.slots[0], owner_user_id: owner.id, schedulable: false }),
+  )
+  let response
+  const handle = createPanelHandler({
+    cfg: { paths: { project: h.projectRoot } },
+    readBody,
+    requireAuth(req) {
+      req.panelUser = 'other-user'
+      req.panelRole = 'user'
+      req.panelUserId = other.id
+      return true
+    },
+    json(_res, status, body) {
+      response = { status, body }
+    },
+  })
+  for (const suffix of ['register', 'registration-reveal']) {
+    const req = Readable.from([Buffer.from(JSON.stringify({ email }))])
+    req.method = 'POST'
+    await handle(req, { setHeader() {} }, new URL(`http://localhost/api/panel/vms/vm-01/oauth/login/${suffix}`))
+    assert.equal(response.status, 404)
+  }
+  assert.deepEqual(h.calls, [])
+  assert.ok(!fs.existsSync(path.join(h.projectRoot, 'data/codex-registration')))
 })
 
 test('remote RPC shares the job lock and disables all control when the slot rests', async (t) => {

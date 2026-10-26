@@ -30,18 +30,8 @@ if [ -x /opt/kin-mailbox/venv/bin/python ] && [ -f /opt/kin-mailbox/ready-${PLAY
   /opt/kin-mailbox/venv/bin/python -c 'from playwright.sync_api import sync_playwright; import os; p=sync_playwright().start(); assert os.path.isfile(p.chromium.executable_path); p.stop()'
   exit 0
 fi
-if ! (touch /opt/.kin-browser-write-test && rm -f /opt/.kin-browser-write-test) 2>/dev/null; then
-  echo '{"event":"stage","stage":"failed","code":"browser_runtime_unavailable"}'
-  exit 1
-fi
-apt-get update -qq || { echo '{"event":"stage","stage":"failed","code":"browser_packages_failed"}'; exit 1; }
-dpkg --configure -a
-apt-get install -y --no-install-recommends python3-venv ca-certificates
-mkdir -p /opt/kin-mailbox
-python3 -m venv /opt/kin-mailbox/venv
-/opt/kin-mailbox/venv/bin/python -m pip install --disable-pip-version-check playwright==${PLAYWRIGHT_VERSION}
-/opt/kin-mailbox/venv/bin/python -m playwright install --with-deps chromium
-touch /opt/kin-mailbox/ready-${PLAYWRIGHT_VERSION}
+echo '{"event":"stage","stage":"failed","code":"browser_runtime_unavailable"}'
+exit 1
 `
 
 // This supervisor lives INSIDE the actual slot. A lost control pipe or cancel
@@ -184,25 +174,12 @@ export function runMailboxSlotProcess({
   onStage,
   onControl,
   onEvent,
+  onCheckpoint,
   spawnImpl = spawn,
 }) {
   if (signal?.aborted) return Promise.reject(mailboxError('login_cancelled', 409))
-  if (action === 'prepare' && spawnImpl === spawn) {
-    try {
-      stagePortableMailboxRuntime(projectRoot, vm)
-    } catch (error) {
-      return Promise.reject(
-        error.code?.startsWith('browser_') || error.code === 'slot_resting'
-          ? error
-          : mailboxError('browser_runtime_unavailable', 503),
-      )
-    }
-  }
   const host = slotHost(vm)
-  const portable =
-    host.kind === 'local' &&
-    fs.existsSync(path.join(projectRoot, 'vms', vm.id, 'cli-home', '.local', 'share', 'kin-mailbox', 'portable.json'))
-  const user = portable && !isKvmRuntime(vm) ? host.execUser(vm) : '0'
+  const user = !isKvmRuntime(vm) ? host.execUser(vm) : '0'
   const argv = slotExecArgv(vm, ['python3', '-u', '-c', SLOT_SUPERVISOR], { user, interactive: true })
   const job =
     action === 'prepare'
@@ -243,7 +220,10 @@ export function runMailboxSlotProcess({
         killTimer.unref?.()
       }
     }
-    const timer = setTimeout(abort, action === 'prepare' ? 15 * 60_000 : action === 'remote' ? 31 * 60_000 : 520_000)
+    const timer = setTimeout(
+      abort,
+      action === 'prepare' ? 15 * 60_000 : ['remote', 'register'].includes(action) ? 31 * 60_000 : 520_000,
+    )
     timer.unref?.()
     signal?.addEventListener('abort', abort, { once: true })
     onControl?.(send)
@@ -272,7 +252,17 @@ export function runMailboxSlotProcess({
         }
         if (event.event === 'callback' && typeof event.callback_url === 'string') callback = event.callback_url
         if (event.event === 'prepared') prepared = event.ok === true
-        if (event.event === 'result' && ['session', 'subscription'].includes(action)) result = event.data
+        if (event.event === 'result' && ['session', 'subscription', 'register'].includes(action)) result = event.data
+        if (event.event === 'registration_checkpoint' && action === 'register') {
+          try {
+            if (!onCheckpoint) throw mailboxError('registration_checkpoint_failed', 503)
+            onCheckpoint(event.data)
+            send({ registration_checkpoint_saved: true })
+          } catch {
+            errorCode = 'registration_checkpoint_failed'
+            abort()
+          }
+        }
         if (event.event === 'rpc' && /^[a-f0-9-]{36}$/.test(event.id || '')) onEvent?.(event)
       }
     })
@@ -295,7 +285,8 @@ export function runMailboxSlotProcess({
       if (action === 'prepare')
         return prepared ? complete(null, { ok: true }) : complete(mailboxError('browser_prepare_failed', 502))
       if (action === 'remote') return complete(null, { ok: true })
-      if (['session', 'subscription'].includes(action))
+      if (errorCode) return complete(mailboxError(errorCode, 502))
+      if (['session', 'subscription', 'register'].includes(action))
         return result ? complete(null, result) : complete(mailboxError('browser_result_missing', 502))
       callback ? complete(null, { callback }) : complete(mailboxError('oauth_callback_missing', 502))
     })

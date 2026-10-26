@@ -1,5 +1,8 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 import { SLOT_CAPS_NODE } from '../../src/lib/cluster/placement.mjs'
 import { codexRoleMatches, slotContainerBody } from '../../src/lib/cluster/remote-slot.mjs'
 import { REMOTE_KERNEL_ENTRY } from '../../src/lib/vm/slot-engine.mjs'
@@ -9,6 +12,41 @@ import { startSlotReady } from '../../src/lib/vm/slot-runtime.mjs'
 
 const gpt = { id: 'vm-codex-01', platform: 'openai', family: 'codex', node_id: 'node-a', kernel: 'ubuntu-24.04' }
 const claude = { id: 'vm-03', platform: 'anthropic', node_id: 'node-a', kernel: 'ubuntu-24.04' }
+
+for (const credential of [false, true]) {
+  test(`GPT boot only starts inference when credentials exist (${credential})`, async (t) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'empty-gpt-boot-'))
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+    const calls = []
+    const runtime = { type: 'docker', stopped: false, pid: 42 }
+    const result = await startSlotReady(
+      {
+        ...gpt,
+        node_id: null,
+        schedulable: false,
+        codex: credential ? { has_access: true, has_refresh: true } : {},
+      },
+      root,
+      {
+        ops: {
+          startSlot: async () => {
+            calls.push('boot')
+            return { ok: true, runtime }
+          },
+          writeCodexKernelConfig: () => calls.push('config'),
+          ensureCodexKernel: async () => {
+            calls.push('kernel')
+            return { ok: true }
+          },
+        },
+      },
+    )
+    assert.equal(result.ok, true)
+    assert.deepEqual(result.docker.runtime, runtime)
+    assert.deepEqual(calls, credential ? ['boot', 'config', 'kernel'] : ['boot'])
+    if (!credential) assert.equal(result.kernel.reason, 'no_credential')
+  })
+}
 
 function body(vm) {
   return slotContainerBody(vm, {
