@@ -122,9 +122,11 @@ test('occupied, stopped, duplicate-email and unproxied slots do not start regist
   assert.deepEqual(h.calls, [])
 })
 
-test('an empty resting slot can register and authorize without enabling scheduling or automatic retries', async (t) => {
+test('an empty soft-paused resting slot can register and authorize without enabling scheduling or automatic retries', async (t) => {
   const h = harness(t)
   h.vm.schedulable = false
+  h.vm.schedule_off = true
+  h.vm.status = 'paused'
   h.service.register('vm-01', email, owner)
   await h.service.settle()
   assert.equal(h.service.status('vm-01').state.status, 'succeeded')

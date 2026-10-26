@@ -125,6 +125,7 @@ export type OutboundProfile = {
   preset: string
   cli_version: string
   user_agent: string
+  cc_entrypoint: string
   anthropic_beta: string
   beta_sample_model: string
 }

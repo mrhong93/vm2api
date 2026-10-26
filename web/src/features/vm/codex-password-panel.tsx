@@ -63,7 +63,9 @@ export function CodexPasswordPanel({ vm }: { vm: Vm }) {
   const [busy, setBusy] = useState(false)
   const [environmentBusy, setEnvironmentBusy] = useState(false)
   const notified = useRef('')
-  const slotRunning = ['running', 'ok'].includes(vm.status || '')
+  const slotRunning =
+    ['running', 'ok', 'paused'].includes(vm.status || '') &&
+    vm.runtime?.stopped !== true
   useEffect(() => {
     setSelected(status.data?.credential_id || '')
     void qc.invalidateQueries({ queryKey: ['login-credentials'] })

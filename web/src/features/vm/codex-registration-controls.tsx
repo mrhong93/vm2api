@@ -47,7 +47,10 @@ export function CodexRegistrationControls({
   const unavailable =
     locked ||
     busy ||
-    !['running', 'ok'].includes(vm.status || '') ||
+    !(
+      ['running', 'ok', 'paused'].includes(vm.status || '') &&
+      vm.runtime?.stopped !== true
+    ) ||
     vm.can_import_credential === false
   async function refresh() {
     await qc.invalidateQueries({ queryKey: ['codex-login', vm.id] })
@@ -185,7 +188,10 @@ export function CodexRegistrationControls({
                 调度关闭不影响手动注册；注册及授权完成后仍保持关闭，由你手动开启。
               </p>
             )}
-            {!['running', 'ok'].includes(vm.status || '') && (
+            {!(
+              ['running', 'ok', 'paused'].includes(vm.status || '') &&
+              vm.runtime?.stopped !== true
+            ) && (
               <p className='text-xs text-amber-600'>
                 请先在槽位页面点击开机。空槽无需账号凭据即可开机。
               </p>

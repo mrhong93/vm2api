@@ -44,7 +44,7 @@ export function readLocalVersion(root = projectRoot()) {
         if (ver) return normalizeVersion(ver) || '0.0.0'
         continue
       }
-      const ver = normalizeVersion(raw.trim())
+      const ver = raw.trim()
       if (ver) return ver
     } catch {
       // try next
@@ -310,7 +310,7 @@ export async function buildUpdateStatus({ projectRoot: root, currentVersion, upg
     upgrade_command: upgradeCommand(updateAvailable ? latest : ''),
     check_command: `sudo bash ${hostRoot(root)}/deploy/install.sh check`,
     repo: GITHUB_REPO,
-    upstream_base: 'v1.3.226',
+    upstream_base: 'v1.4.006',
     source_error: remote.error,
     ...(upgrade ? { upgrade } : {}),
   }
