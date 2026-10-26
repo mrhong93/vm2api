@@ -12,8 +12,20 @@ SOURCE = Path(os.environ['MAILBOX_SUPERVISOR_SOURCE']).read_text()
 
 
 class SupervisorTests(unittest.TestCase):
+    def setUp(self):
+        runtime = tempfile.TemporaryDirectory(prefix='mailbox-supervisor-')
+        self.addCleanup(runtime.cleanup)
+        root = Path(runtime.name)
+        python = root / 'venv/bin/python'
+        python.parent.mkdir(parents=True)
+        python.symlink_to(sys.executable)
+        # Exercise the real supervisor with a fixture interpreter, without
+        # requiring a slot's browser runtime or modifying the host's /opt.
+        self.source = SOURCE.replace("'/opt/kin-mailbox'", repr(str(root))).replace(
+            "'/home/kincli/.local/share/kin-mailbox'", repr(str(root / 'no-portable-runtime')))
+
     def launch(self, job):
-        child = subprocess.Popen(['python3', '-u', '-c', SOURCE], stdin=subprocess.PIPE,
+        child = subprocess.Popen([sys.executable, '-u', '-c', self.source], stdin=subprocess.PIPE,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         def cleanup():
             if child.poll() is None:
@@ -30,7 +42,10 @@ class SupervisorTests(unittest.TestCase):
         import select
         if not select.select([child.stdout], [], [], 5)[0]:
             self.fail('Supervisor or child did not emit an event')
-        return json.loads(child.stdout.readline())
+        line = child.stdout.readline()
+        if not line:
+            self.fail(f'Supervisor exited before an event: {child.stderr.read()}')
+        return json.loads(line)
 
     def test_prepare_and_control_forwarding(self):
         child = self.launch({'action': 'prepare', 'bootstrap': 'true'})
