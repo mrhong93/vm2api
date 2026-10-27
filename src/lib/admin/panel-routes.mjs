@@ -1393,7 +1393,15 @@ export function createPanelHandler(ctx) {
       }
       if (await handleLoginCredentials(req, res, p, { projectRoot: cfg.paths.project, readBody, json, ok: panel.ok }))
         return true
-      if (await handleQualityConfig(req, res, p, { projectRoot: cfg.paths.project, readBody, json, ok: panel.ok }))
+      if (
+        await handleQualityConfig(req, res, p, {
+          projectRoot: cfg.paths.project,
+          readBody,
+          json,
+          ok: panel.ok,
+          runner: ctx.qualityRunner,
+        })
+      )
         return true
       if ((req.method === 'GET' || req.method === 'PUT') && p === '/api/panel/onboarding') {
         if (req.method === 'PUT') {

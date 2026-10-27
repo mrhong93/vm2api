@@ -42,7 +42,7 @@ export function OperationsPage() {
           </TabsList>
           {tab === 'quality' && (
             <span className='rounded-md border border-amber-500/20 bg-amber-500/5 px-2.5 py-1 text-xs text-amber-700 dark:text-amber-300'>
-              配置可保存 · 记录为演示 · 不执行检测
+              真实检测 · 定时执行 · 记录可追溯
             </span>
           )}
         </div>
