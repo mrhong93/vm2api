@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
+import crypto from 'node:crypto'
 import { browserRuntimeTarget, manageMailboxBrowserRuntime } from '../../src/lib/oauth/mailbox-browser-environment.mjs'
 
 test('runtime target requires exact supported guest OS, Python ABI and architecture', () => {
@@ -27,7 +28,15 @@ test('installer detects the guest, caches verified bundles and streams into that
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'browser-env-'))
   t.after(() => fs.rmSync(root, { recursive: true, force: true }))
   fs.mkdirSync(path.join(root, 'scripts'))
-  for (const file of ['mailbox-runtime-slot.py', 'build-mailbox-portable.py'])
+  const cache = path.join(root, 'share/kin-mailbox-runtime/managed')
+  fs.mkdirSync(cache, { recursive: true })
+  const oldKey = 'debian-12-amd64-py3.11-1.64.1-r3'
+  fs.writeFileSync(path.join(cache, oldKey + '.tar.gz'), 'old-headless-bundle')
+  fs.writeFileSync(
+    path.join(cache, oldKey + '.json'),
+    JSON.stringify({ sha256: crypto.createHash('sha256').update('old-headless-bundle').digest('hex') }),
+  )
+  for (const file of ['mailbox-runtime-slot.py', 'build-mailbox-portable.py', 'mailbox-display.py'])
     fs.copyFileSync(path.join('scripts', file), path.join(root, 'scripts', file))
   const calls = [],
     info = { os: 'debian', os_version: '12', arch: 'amd64', python: '3.11', supported: true }
@@ -53,6 +62,7 @@ test('installer detects the guest, caches verified bundles and streams into that
   assert.equal(calls.filter((call) => call.output).length, 1)
   assert.ok(calls.find((call) => call.output).argv.includes('debian:12'))
   const install = calls.find((call) => call.archive)
+  assert.ok(install.archive.endsWith('-r4.tar.gz'))
   assert.ok(install.argv.includes('isolated-test-slot'))
   const uidArg = install.argv.indexOf('-u')
   assert.notEqual(uidArg, -1)

@@ -2,7 +2,7 @@
 
 本仓库为 `zhang2580384/vm2api`，首个独立发行版为 **v2.0.0**，上游基线为 `dofastted/vm2api` 的 **v1.3.226**（`7cd52501c03c03e36493c38e39edc349de7d0c99`）。保留上游版权及 LICENSE。
 
-当前发行版 **v2.1.1** 选择性同步上游 **v1.4.006**（`07edb2cdc0576da1ea9a64bc2d27c00fb4c15aff`），通过 merge 保留双方提交历史。Claude 协议及匹配 payload 保留 v2.0.2 / v1.3.226 兼容实现，不表示与上游完整等价；暂缓项目及验收条件见 [同步记录](UPSTREAM_SYNC_1.4.006.md)。首次独立版本的来源记录保持不变。
+当前发行版 **v2.1.2** 选择性同步上游 **v1.4.006**（`07edb2cdc0576da1ea9a64bc2d27c00fb4c15aff`），通过 merge 保留双方提交历史。Claude 协议及匹配 payload 保留 v2.0.2 / v1.3.226 兼容实现，不表示与上游完整等价；暂缓项目及验收条件见 [同步记录](UPSTREAM_SYNC_1.4.006.md)。首次独立版本的来源记录保持不变。
 
 ## 维护和发布规则
 
@@ -45,11 +45,11 @@ fixture@example.com----gpt-fixture-password----JBSWY3DPEHPK3PXP
 
 ### 浏览器运行时前提
 
-“导入/保存/绑定”不依赖浏览器；实际登录需要 Playwright 1.64.1 和 Chromium。原贡献中的浏览器运行包不在 Git 内，**本版控制面镜像也不附带该大型运行包**。可写且有安装权限的槽位可通过原安装流程准备；只读根目录槽位需要预先提供匹配发行版/架构/Python ABI 的 portable 包。缺失时会返回 `browser_runtime_unavailable`，不会关闭只读限制或重建槽位。
+“导入/保存/绑定”不依赖浏览器；实际登录需要 Playwright 1.64.1、Chromium 和图形显示组件。原贡献中的浏览器运行包不在 Git 内，**本版控制面镜像也不附带该大型运行包**。通过槽位详情的安装/升级按钮构建匹配发行版、架构和 Python ABI 的 r4 portable 包，支持只读根目录槽位。缺失时明确提示安装或升级，不关闭只读限制或重建槽位。
 
-提供的 `scripts/build-mailbox-portable.py` 针对 Ubuntu 24.04 amd64、Python 3.12 构建环境：预装 `/opt/kin-mailbox/venv`、Playwright 1.64.1、`/opt/kin-mailbox/browsers` 的 Chromium 及系统依赖后，以 root 执行并将标准输出保存为 tar.gz。源码不包含账号或 profile。
+提供的 `scripts/build-mailbox-portable.py` 在目标匹配的 Ubuntu / Debian 构建容器中执行：预装 `/opt/kin-mailbox/venv`、Playwright 1.64.1、`/opt/kin-mailbox/browsers` 的 Chromium 及系统依赖后，以 root 执行并将标准输出保存为 tar.gz。直接执行时需保留同目录的 `mailbox-display.py`。图形组件使用发行版官方源码构建；源码不包含账号或 profile。
 
-将包放入控制面项目的 `share/kin-mailbox-runtime/ubuntu24.04-amd64.tar.gz`，同目录 `manifest.json` 包含 `version: "1.64.1"` 和真实 `sha256`。包将校验后放入槽位原有可写 home，保留 profiles。不要把 Ubuntu 包部署到 Debian 槽位；远程主机也需要分别准备对应运行时。
+面板管理的包缓存于 `share/kin-mailbox-runtime/managed/<系统>-<版本>-<架构>-py<Python版本>-1.64.1-r4.tar.gz`，同名 `.json` 记录系统信息、版本和真实 `sha256`。包将校验后放入槽位原有可写 home，保留 profiles。旧手工缓存与 r3 缓存不会代替 r4 包。不要把 Ubuntu 包部署到 Debian 槽位；支持矩阵与实测边界见 [浏览器环境文档](BROWSER_ENVIRONMENT.md)。
 
 ## 首次从官方版本切换
 

@@ -22,13 +22,15 @@ if [ -x "$PORTABLE/venv/bin/python" ] && [ -f "$PORTABLE/portable.json" ]; then
   export XDG_CONFIG_HOME="$PORTABLE/config"
   export FONTCONFIG_FILE="$PORTABLE/fonts.conf"
   mkdir -p "$TMPDIR" "$XDG_CACHE_HOME" "$XDG_CONFIG_HOME"
+  if [ ! -f "$PORTABLE/display/runtime.py" ] || [ ! -x "$PORTABLE/display/bin/Xvfb" ] || [ ! -x "$PORTABLE/display/bin/xkbcomp" ]; then
+    echo '{"event":"stage","stage":"failed","code":"browser_graphical_runtime_missing"}'; exit 1
+  fi
   "$PORTABLE/venv/bin/python" -c 'import ctypes,importlib.metadata; nss=ctypes.CDLL("libnss3.so"); assert nss.NSS_NoDB_Init(None)==0; nss.NSS_Shutdown(); from playwright.sync_api import sync_playwright; assert importlib.metadata.version("playwright")=="${PLAYWRIGHT_VERSION}"; p=sync_playwright().start(); b=p.chromium.launch(headless=True,args=["--disable-dev-shm-usage","--disable-background-networking"]); page=b.new_page(); page.set_content("<title>Browser ready</title>"); assert page.title()=="Browser ready"; b.close(); p.stop()' || { echo '{"event":"stage","stage":"failed","code":"browser_launch_failed"}'; exit 1; }
   exit 0
 fi
 export PLAYWRIGHT_BROWSERS_PATH=/opt/kin-mailbox/browsers
 if [ -x /opt/kin-mailbox/venv/bin/python ] && [ -f /opt/kin-mailbox/ready-${PLAYWRIGHT_VERSION} ]; then
-  /opt/kin-mailbox/venv/bin/python -c 'from playwright.sync_api import sync_playwright; import os; p=sync_playwright().start(); assert os.path.isfile(p.chromium.executable_path); p.stop()'
-  exit 0
+  echo '{"event":"stage","stage":"failed","code":"browser_graphical_runtime_missing"}'; exit 1
 fi
 echo '{"event":"stage","stage":"failed","code":"browser_runtime_unavailable"}'
 exit 1
@@ -51,7 +53,7 @@ if job['action']=='prepare':
   for line in child.stdout:
    try:
     value=json.loads(line)
-    if value.get('event')=='stage' and value.get('stage')=='failed' and value.get('code') in ['browser_launch_failed','browser_runtime_unavailable','browser_packages_failed']:print(json.dumps(value),flush=True)
+    if value.get('event')=='stage' and value.get('stage')=='failed' and value.get('code') in ['browser_launch_failed','browser_runtime_unavailable','browser_packages_failed','browser_graphical_runtime_missing']:print(json.dumps(value),flush=True)
    except (ValueError,TypeError):pass
  reader=threading.Thread(target=preparation_events,daemon=True);reader.start()
 else:
@@ -163,6 +165,8 @@ export async function assertMailboxSlotNetwork(vm, { inspect = inspectContainerO
   if (!container?.State?.Running || container.State.Paused) throw mailboxError('slot_not_running', 409)
   const expected = slotNetworkForVm(vm)
   if (!expected || container.HostConfig?.NetworkMode !== expected) throw mailboxError('slot_egress_mismatch', 409)
+  const limit = Number(container.HostConfig?.Memory || 0)
+  if (!isKvmRuntime(vm) && limit > 0 && limit < 1024 ** 3) throw mailboxError('browser_memory_insufficient', 409)
 }
 
 export function runMailboxSlotProcess({
