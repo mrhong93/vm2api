@@ -22,7 +22,9 @@ TARGETS = {('ubuntu', '22.04'): '3.10', ('ubuntu', '24.04'): '3.12',
 BINARIES = ('venv', 'browsers', 'lib', 'fonts', 'fonts.conf', 'portable.json',
             'ready-' + VERSION, 'tmp')
 PRESERVED = ('profiles', 'cache', 'config')
-JOBS = Path('/tmp/kin-mailbox-maintenance')
+# Old root-owned job directories may survive a failed installation. Keep each
+# execution identity's lock/cancellation files private without changing owners.
+JOBS = Path('/tmp/kin-mailbox-maintenance' + (f'-{os.geteuid()}' if os.geteuid() else ''))
 
 
 class RuntimeFailure(Exception):

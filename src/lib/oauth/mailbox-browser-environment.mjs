@@ -5,6 +5,7 @@ import { spawn } from 'node:child_process'
 import { pipeline } from 'node:stream/promises'
 import { slotHost } from '../vm/slot-host.mjs'
 import { slotExecArgv } from '../vm/slot-exec.mjs'
+import { isKvmRuntime } from '../vm/runtime-kind.mjs'
 import { mailboxError } from './codex-mailbox-store.mjs'
 
 const VERSION = '1.64.1'
@@ -117,7 +118,10 @@ export async function manageMailboxBrowserRuntime({
   if (host.native) throw mailboxError('browser_os_unsupported', 409)
   const env = host.dockerEnv()
   const runner = fs.readFileSync(path.join(projectRoot, 'scripts/mailbox-runtime-slot.py'), 'utf8')
-  const command = slotExecArgv(vm, ['python3', '-u', '-c', runner], { user: '0', interactive: true })
+  // Docker slots drop all capabilities: UID 0 cannot traverse the slot user's
+  // 0700 home or drop privileges for the launch check. Use the browser's owner.
+  const user = isKvmRuntime(vm) ? '0' : host.execUser(vm)
+  const command = slotExecArgv(vm, ['python3', '-u', '-c', runner], { user, interactive: true })
   const slot = async (operation, target, archive) => {
     const jobId = crypto.randomUUID()
     let output
