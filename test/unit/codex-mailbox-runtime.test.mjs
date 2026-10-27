@@ -225,6 +225,20 @@ test('browser failure details are not returned to callers', async () => {
   )
 })
 
+test('browser resource gate checks the live Docker limit and accepts an explicit online raise', async () => {
+  const vm = { id: 'vm-02', proxy: { id: 'resource-fixture', scheme: 'local' } }
+  let memory = 512 * 1024 ** 2
+  const inspect = async () => ({
+    State: { Running: true },
+    HostConfig: { NetworkMode: 'kin-eg-resource-fixture', Memory: memory },
+  })
+  await assert.rejects(assertMailboxSlotNetwork(vm, { inspect }), { code: 'browser_memory_insufficient' })
+  memory = 1024 ** 3
+  await assertMailboxSlotNetwork(vm, { inspect })
+  memory = 0 // Docker's unlimited setting is not a zero-memory slot.
+  await assertMailboxSlotNetwork(vm, { inspect })
+})
+
 test('remote screenshot RPC larger than the old output cap is delivered without requiring an OAuth callback', async () => {
   const id = '00000000-0000-0000-0000-000000000000'
   const events = []

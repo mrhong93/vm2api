@@ -26,7 +26,7 @@ export function browserRuntimeTarget(info) {
   return { os: info.os, os_version: info.os_version, arch: info.arch, python: info.python }
 }
 
-export function browserBuilderScript(packer, downloadProxy = '') {
+export function browserBuilderScript(packer, downloadProxy = '', displayHelper = '') {
   const quote = (value) => `'${value.replaceAll("'", "'\\''")}'`
   // Optional operator-supplied download proxy, scoped to the disposable builder.
   const proxy = downloadProxy
@@ -42,7 +42,7 @@ export PLAYWRIGHT_BROWSERS_PATH=/opt/kin-mailbox/browsers
  /opt/kin-mailbox/venv/bin/python -m pip install --disable-pip-version-check playwright==${VERSION}
  /opt/kin-mailbox/venv/bin/python -m playwright install --with-deps chromium
 ) >&2
-exec /opt/kin-mailbox/venv/bin/python -c ${quote(packer)}
+exec /opt/kin-mailbox/venv/bin/python -c ${quote(`DISPLAY_HELPER_SOURCE = ${JSON.stringify(displayHelper)}\n${packer}`)}
 `
 }
 
@@ -167,7 +167,7 @@ export async function manageMailboxBrowserRuntime({
   const target = browserRuntimeTarget(await slot('status'))
   const cache = path.join(projectRoot, 'share/kin-mailbox-runtime/managed')
   fs.mkdirSync(cache, { recursive: true, mode: 0o700 })
-  const key = `${target.os}-${target.os_version}-${target.arch}-py${target.python}-${VERSION}-r3`
+  const key = `${target.os}-${target.os_version}-${target.arch}-py${target.python}-${VERSION}-r4`
   const archive = path.join(cache, key + '.tar.gz')
   const manifest = path.join(cache, key + '.json')
   let valid = false
@@ -198,11 +198,12 @@ export async function manageMailboxBrowserRuntime({
         ],
         env,
         signal,
-        timeout: 20 * 60_000,
+        timeout: 40 * 60_000,
         output: temporary,
         input: browserBuilderScript(
           fs.readFileSync(path.join(projectRoot, 'scripts/build-mailbox-portable.py'), 'utf8'),
           process.env.VM2API_BROWSER_BUILD_PROXY || '',
+          fs.readFileSync(path.join(projectRoot, 'scripts/mailbox-display.py'), 'utf8'),
         ),
       })
       const hash = await sha256(temporary)

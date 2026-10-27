@@ -10,12 +10,9 @@ import os
 import queue
 import re
 import signal
-import select
-import subprocess
 import sys
 import threading
 import time
-import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs, unquote
@@ -41,54 +38,19 @@ def enable_browser_clipboard(context):
 
 @contextlib.contextmanager
 def slot_browser_display(runtime):
-    """Optional slot-local X server. It shares the browser's network namespace."""
-    display_root = Path(runtime) / 'display'
-    binary = display_root / 'bin/Xvfb'
-    if not binary.is_file():
-        yield None
-        return
-    env = dict(os.environ)
-    env['LD_LIBRARY_PATH'] = str(display_root / 'lib') + ':' + env.get('LD_LIBRARY_PATH', '')
-    read_fd, write_fd = os.pipe()
-    process = None
-    # The slot is already isolated. X11 additionally uses a private cookie;
-    # no TCP display, desktop service or host browser is exposed.
-    with tempfile.TemporaryDirectory(prefix='display-', dir=Path(runtime) / 'tmp') as folder:
-        authority = Path(folder) / 'authority'
-        cookie = os.urandom(16)
-        def write_authority(number):
-            fields = [b'', str(number).encode(), b'MIT-MAGIC-COOKIE-1', cookie]
-            authority.write_bytes(struct.pack('!H', 65535) + b''.join(struct.pack('!H', len(v)) + v for v in fields))
-            authority.chmod(0o600)
-        write_authority('')
-        try:
-            process = subprocess.Popen([str(binary), '-displayfd', str(write_fd),
-                '-screen', '0', '1365x900x24', '-nolisten', 'tcp', '-auth', str(authority),
-                '-xkbdir', str(display_root / 'xkb'), '-fp', 'built-ins'],
-                env=env, pass_fds=(write_fd,), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            os.close(write_fd)
-            write_fd = None
-            if not select.select([read_fd], [], [], 15)[0]:
-                raise FlowError('browser_display_unavailable')
-            number = os.read(read_fd, 64).decode().strip()
-            if not number.isdigit() or process.poll() is not None:
-                raise FlowError('browser_display_unavailable')
-            write_authority(number)
-            env.update(DISPLAY=':' + number, XAUTHORITY=str(authority))
+    """Use the same portable display helper that passed installation checks."""
+    import importlib.util
+    helper = Path(runtime) / 'display/runtime.py'
+    if not helper.is_file():
+        raise FlowError('browser_graphical_runtime_missing')
+    spec = importlib.util.spec_from_file_location('mailbox_display', helper)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    try:
+        with module.slot_browser_display(runtime) as env:
             yield env
-        except OSError:
-            raise FlowError('browser_display_unavailable')
-        finally:
-            os.close(read_fd)
-            if write_fd is not None:
-                os.close(write_fd)
-            if process is not None and process.poll() is None:
-                process.terminate()
-                try:
-                    process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                    process.wait()
+    except module.DisplayError as error:
+        raise FlowError(str(error)) from None
 
 
 def browser_context_options(payload, environ=None):

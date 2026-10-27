@@ -227,6 +227,11 @@ export function CodexBrowserPanel({ vm }: { vm: Vm }) {
               ChatGPT
             </Button>
           </div>
+          {enabled && !manual && (
+            <p className='text-xs text-amber-600' role='status'>
+              当前屏幕只读，请先点击“接管鼠标键盘”再操作网页。
+            </p>
+          )}
           <div className='flex gap-2'>
             <Input
               aria-label='远程浏览器地址'
@@ -291,12 +296,23 @@ export function CodexBrowserPanel({ vm }: { vm: Vm }) {
                   className='w-full select-none'
                   draggable={false}
                   onClick={(event) => {
-                    if (!usable) return
-                    event.currentTarget.parentElement?.focus()
+                    const currentFrame = frame.data
+                    if (!currentFrame) return
+                    if (!usable) {
+                      toast.info('请先点击“接管鼠标键盘”再操作网页')
+                      return
+                    }
                     const rect = event.currentTarget.getBoundingClientRect()
+                    event.currentTarget.parentElement?.focus({
+                      preventScroll: true,
+                    })
                     void control('click', {
-                      x: ((event.clientX - rect.left) / rect.width) * 1365,
-                      y: ((event.clientY - rect.top) / rect.height) * 900,
+                      x:
+                        ((event.clientX - rect.left) / rect.width) *
+                        currentFrame.width,
+                      y:
+                        ((event.clientY - rect.top) / rect.height) *
+                        currentFrame.height,
                     })
                   }}
                 />

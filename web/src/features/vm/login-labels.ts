@@ -44,7 +44,8 @@ const labels: Record<string, string> = {
   running: '进行中',
   preparing_browser: '检查槽内浏览器环境',
   detecting_browser_os: '正在识别槽位系统',
-  building_browser_runtime: '正在下载并准备浏览器运行包，首次需要几分钟',
+  building_browser_runtime:
+    '正在下载并编译浏览器图形环境，首次准备需要较长时间',
   installing_browser_runtime: '正在安装并检查浏览器启动',
   uninstalling_browser: '正在卸载浏览器环境',
   browser_runtime_installed: '浏览器环境已安装，启动检查通过',
@@ -95,6 +96,15 @@ const labels: Record<string, string> = {
     '浏览器环境准备失败，请重试；若持续失败请检查槽位浏览器运行环境',
   browser_runtime_unavailable:
     '槽位浏览器运行环境不可用，请先点击安装浏览器环境',
+  browser_graphical_runtime_missing:
+    '缺少图形浏览器组件，请点击升级或重新安装浏览器环境；会话资料会保留',
+  browser_display_unavailable:
+    '图形显示组件启动失败，请升级或重新安装浏览器环境',
+  browser_memory_insufficient:
+    '浏览器登录需要槽位内存上限至少 1 GiB，请在槽位概览中提升内存后重试',
+  browser_control_busy:
+    '浏览器控制请求较多，请稍后再操作，避免多个页面同时接管',
+  browser_login_failed: '浏览器登录中断，请检查远程屏幕及槽位资源后重试',
   browser_runtime_invalid: '浏览器运行包校验失败，请重新安装匹配版本',
   browser_launch_failed: '浏览器无法启动，请检查槽位运行依赖和可写目录',
   browser_submit_unavailable:

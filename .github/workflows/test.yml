@@ -71,6 +71,7 @@ jobs:
           python-version: '3.12'
       - name: offline account-login browser fixtures
         run: |
+          python test/mailbox-display-test.py
           python -m pip install playwright==1.64.1
           python -m playwright install --with-deps chromium
           python test/codex-mailbox-browser-test.py

@@ -11,6 +11,8 @@ export type BrowserEnvironment = {
   os_version?: string
   supported?: boolean
   installed?: boolean
+  graphical?: boolean
+  needs_upgrade?: boolean
   running: boolean
   stage?: string
   error_code?: string | null
@@ -65,7 +67,11 @@ export function BrowserEnvironmentControls({
         disabled={disabled || info?.supported === false}
         onClick={() => void perform('install')}
       >
-        {info?.installed ? '重新安装浏览器环境' : '安装浏览器环境'}
+        {info?.needs_upgrade
+          ? '升级浏览器环境'
+          : info?.installed
+            ? '重新安装浏览器环境'
+            : '安装浏览器环境'}
       </Button>
       <Button
         size='sm'
@@ -88,7 +94,11 @@ export function BrowserEnvironmentControls({
               : info?.running
                 ? loginLabel(info.stage || '')
                 : info?.installed
-                  ? '已安装'
+                  ? info.needs_upgrade
+                    ? '已安装，需升级图形环境'
+                    : info.graphical
+                      ? '已安装 · 图形模式'
+                      : '已安装'
                   : info
                     ? '未安装'
                     : '检测失败'}

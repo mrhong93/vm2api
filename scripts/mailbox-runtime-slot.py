@@ -19,7 +19,7 @@ ROOT = HOME / '.local/share/kin-mailbox'
 LEGACY = Path('/opt/kin-mailbox')
 TARGETS = {('ubuntu', '22.04'): '3.10', ('ubuntu', '24.04'): '3.12',
            ('debian', '12'): '3.11', ('debian', '13'): '3.13'}
-BINARIES = ('venv', 'browsers', 'lib', 'fonts', 'fonts.conf', 'portable.json',
+BINARIES = ('venv', 'browsers', 'display', 'lib', 'fonts', 'fonts.conf', 'portable.json',
             'ready-' + VERSION, 'tmp')
 PRESERVED = ('profiles', 'cache', 'config')
 # Old root-owned job directories may survive a failed installation. Keep each
@@ -52,8 +52,13 @@ def status():
         portable = {}
     managed = bool(portable and (ROOT / 'venv/bin/python').is_file())
     legacy = (LEGACY / ('ready-' + VERSION)).is_file() and (LEGACY / 'venv/bin/python').is_file()
+    graphical = managed and all((ROOT / name).is_file() for name in (
+        'display/bin/Xvfb', 'display/bin/xkbcomp', 'display/runtime.py'))
     info.update(installed=managed or legacy, managed=managed, legacy=bool(legacy),
-                version=portable.get('version') if managed else VERSION if legacy else None)
+                version=portable.get('version') if managed else VERSION if legacy else None,
+                graphical=graphical,
+                needs_upgrade=bool((legacy and not managed) or (managed and (
+                    portable.get('revision', 0) < 4 or not graphical))))
     return info
 
 
@@ -81,7 +86,7 @@ def remove(path):
 def verify(root):
     """Use a disposable profile and inline page; no account profile or network request."""
     owner = HOME.stat()
-    env = {**os.environ, 'HOME': str(HOME), 'PLAYWRIGHT_BROWSERS_PATH': str(root / 'browsers'),
+    env = {**os.environ, 'HOME': str(HOME), 'KIN_MAILBOX_ROOT': str(root), 'PLAYWRIGHT_BROWSERS_PATH': str(root / 'browsers'),
            'LD_LIBRARY_PATH': str(root / 'lib'), 'TMPDIR': str(root / 'tmp'),
            'XDG_CACHE_HOME': str(root / 'tmp/cache'), 'XDG_CONFIG_HOME': str(root / 'tmp/config'),
            'FONTCONFIG_FILE': str(root / 'fonts.conf')}
@@ -94,16 +99,26 @@ def verify(root):
         os.setgroups([])
         os.setgid(owner.st_gid)
         os.setuid(owner.st_uid)
-    code = '''import importlib.metadata
+    code = '''import importlib.metadata, importlib.util, os
+from pathlib import Path
 from playwright.sync_api import sync_playwright
 assert importlib.metadata.version('playwright') == '1.64.1'
-with sync_playwright() as p:
- b = p.chromium.launch(headless=True, args=['--disable-dev-shm-usage', '--disable-background-networking', '--no-proxy-server'])
+root = Path(os.environ['KIN_MAILBOX_ROOT'])
+spec = importlib.util.spec_from_file_location('mailbox_display', root / 'display/runtime.py')
+display = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(display)
+with display.slot_browser_display(root) as env, sync_playwright() as p:
+ b = p.chromium.launch(headless=False, env=env, args=['--disable-dev-shm-usage', '--disable-background-networking', '--no-proxy-server'])
  c = b.new_context(service_workers='block')
  c.route('**/*', lambda route: route.abort())
  page = c.new_page()
  page.set_content('<title>Browser runtime ready</title>')
  assert page.title() == 'Browser runtime ready'
+ assert not page.evaluate("navigator.userAgent.includes('HeadlessChrome')")
+ page.set_content('<button onclick="this.textContent=String.fromCharCode(99,108,105,99,107,101,100)">check</button>')
+ page.locator('button').click()
+ assert page.locator('button').inner_text() == 'clicked'
+ assert len(page.screenshot()) > 0
  c.close()
  b.close()
 '''
@@ -155,6 +170,8 @@ def install(stream, expected):
             if metadata.get(key) != info[key] or expected.get(key) != info[key]:
                 raise RuntimeFailure('browser_runtime_invalid')
         if metadata.get('version') != VERSION:
+            raise RuntimeFailure('browser_runtime_invalid')
+        if metadata.get('revision') != 4 or not (temp / 'display/runtime.py').is_file():
             raise RuntimeFailure('browser_runtime_invalid')
         # venv Python uses the selected guest's interpreter, never a builder absolute path.
         bin_dir = temp / 'venv/bin'
