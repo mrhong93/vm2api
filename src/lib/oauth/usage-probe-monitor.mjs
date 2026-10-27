@@ -347,7 +347,7 @@ export function createUsageProbeMonitor(opts = {}) {
     if (typeof timer.unref === 'function') timer.unref()
     if (immediate && config.run_on_start) {
       queueMicrotask(() => {
-        runOnce().catch(() => {})
+        if (timer) runOnce().catch(() => {})
       })
     }
     return { started: true, interval_sec: config.interval_sec, run_on_start: config.run_on_start }
@@ -360,6 +360,9 @@ export function createUsageProbeMonitor(opts = {}) {
   }
 
   return {
+    get busy() {
+      return !!inflight || running > 0
+    },
     getConfig: () => config,
     setConfig,
     getSnapshot: () => lastRun,

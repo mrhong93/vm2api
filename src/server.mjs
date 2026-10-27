@@ -79,6 +79,7 @@ import { openDatabase, closeDatabase } from './lib/db/database.mjs'
 import { runLegacyImport } from './lib/db/legacy-import.mjs'
 import { initVmDbSync, stopVmWatch } from './lib/vm/vm-db-sync.mjs'
 import { BackupService } from './lib/admin/backup-service.mjs'
+import { createRestoreRuntime } from './lib/admin/restore-runtime.mjs'
 import { ClusterNodesRepo } from './lib/db/repos/cluster-nodes-repo.mjs'
 import { ClusterManager } from './lib/cluster/cluster-manager.mjs'
 import { createClusterRoutes } from './lib/cluster/cluster-routes.mjs'
@@ -86,7 +87,7 @@ import { bindPlacement, nodeImageBuildRunning } from './lib/cluster/placement.mj
 import { ClusterError } from './lib/cluster/ssh-link.mjs'
 import { nodeEgressProxyUrl, startNodeEgressSocks } from './lib/cluster/node-egress-socks.mjs'
 import { createSlotShell } from './lib/vm/slot-shell.mjs'
-import { vmLockBusy } from './lib/vm/vm-file.mjs'
+import { vmLockBusy, atomicWriteJson } from './lib/vm/vm-file.mjs'
 import { refreshSlotGuestBinDir, syncLocalSlotRestartPolicies } from './lib/vm/vm-runtime.mjs'
 
 import {
@@ -577,7 +578,7 @@ notifyMonitor = createNotifyMonitor({
     }),
 })
 
-// --- Local backup service (auto schedule default ON; no S3 by design) ---
+// --- Complete snapshots with optional encrypted object storage ---
 const backupService = new BackupService({
   dataDir,
   projectRoot: cfg.paths.project,
@@ -591,6 +592,7 @@ backupService.onRestored((db) => {
     store.rebind(db)
   }
   groupsRepo = new GroupsRepo(db)
+  clusterManager.repo = new ClusterNodesRepo(db)
   apiScheduler.reload(apiEndpointStore.listRaw())
 
   routingConfig = loadRoutingConfig()
@@ -614,15 +616,29 @@ backupService.onRestored((db) => {
     maxMb: routingConfig.logging?.max_mb,
     mutedErrorClasses: routingConfig.logging?.muted_error_classes,
   })
-  healthMonitor?.setConfig(routingConfig.health_probe)
-  credentialRefreshMonitor?.setConfig(normalizeCredentialRefreshConfig(routingConfig.credential_refresh))
+  healthMonitor?.setConfig(routingConfig.health_probe, { restart: false })
+  credentialRefreshMonitor?.setConfig(normalizeCredentialRefreshConfig(routingConfig.credential_refresh), {
+    restart: false,
+  })
   kernelWatchdog?.setConfig(normalizeKernelWatchdogConfig(routingConfig.kernel_watchdog))
-  usageProbeMonitor?.setConfig(routingConfig.usage_probe)
-  notifyMonitor?.setConfig(routingConfig.notify)
+  usageProbeMonitor?.setConfig(routingConfig.usage_probe, { restart: false })
+  notifyMonitor?.setConfig(routingConfig.notify, { restart: false })
+
+  // An archive carries identity/session files, not running containers. Never
+  // resurrect source-host processes or start new outbound work on restore.
+  if (process.env.KIN_CRS_MOCK !== '1') {
+    for (const vm of listVms(cfg.paths.project)) {
+      vm.status = 'stopped'
+      vm.runtime = { ...vm.runtime, stopped: true }
+      atomicWriteJson(path.join(cfg.paths.project, 'vms', `${vm.id}.json`), vm)
+    }
+  }
+  invalidateLiveCredentialCache()
+  codexMailboxService(cfg.paths.project).resetAfterRestore()
+  qualityRunner.due.clear()
 
   initPoolRuntime()
   reloadActiveVm(cfg)
-  vmTestSchedule.reload()
 })
 backupService.startScheduler()
 
@@ -1040,7 +1056,68 @@ const handlePanel = createPanelHandler({
   slotShell,
 })
 
+const restoreRuntime = createRestoreRuntime({
+  slots: () => (process.env.KIN_CRS_MOCK === '1' ? [] : listVms(cfg.paths.project)),
+  busy: () =>
+    [
+      healthMonitor,
+      credentialRefreshMonitor,
+      usageProbeMonitor,
+      notifyMonitor,
+      catalogMonitor,
+      kernelWatchdog,
+      cliNodeGuard,
+      proxyPool,
+      codexMailboxService(cfg.paths.project),
+    ].some((item) => item?.busy) ||
+    qualityRunner.running.size > 0 ||
+    vmTestSchedule.running.size > 0 ||
+    [...clusterManager.installs.values()].some((job) => job.status === 'running') ||
+    listVms(cfg.paths.project).some((vm) => vmLockBusy(path.join(cfg.paths.project, 'vms', `${vm.id}.json`))),
+  pause: async () => {
+    for (const monitor of [
+      healthMonitor,
+      credentialRefreshMonitor,
+      usageProbeMonitor,
+      notifyMonitor,
+      catalogMonitor,
+      kernelWatchdog,
+      cliNodeGuard,
+      qualityRunner,
+      vmTestSchedule,
+    ])
+      monitor?.stop?.()
+    codexMailboxService(cfg.paths.project).stop()
+    proxyPool.stopScheduler()
+    stopVmWatch()
+    await clusterManager.stop()
+  },
+  resume: async () => {
+    initVmDbSync(cfg.paths.project)
+    clusterManager.start()
+    proxyPool.startScheduler({ immediate: false })
+    vmTestSchedule.start()
+    qualityRunner.start()
+    codexMailboxService(cfg.paths.project).startMonitor()
+    for (const monitor of [
+      healthMonitor,
+      credentialRefreshMonitor,
+      usageProbeMonitor,
+      notifyMonitor,
+      kernelWatchdog,
+      cliNodeGuard,
+    ])
+      monitor?.start?.({ immediate: false })
+    if (process.env.KIN_CRS_MOCK !== '1') catalogMonitor?.start?.()
+  },
+})
+backupService.onBeforeRestore(() => restoreRuntime.before())
+backupService.onAfterRestore(() => restoreRuntime.after())
+backupService.onBeforeSnapshot(() => codexMailboxService(cfg.paths.project).beginSnapshot())
+backupService.onAfterSnapshot(() => codexMailboxService(cfg.paths.project).endSnapshot())
+
 const server = http.createServer(async (req, res) => {
+  const requestDone = restoreRuntime.trackHttp(req, res)
   try {
     res.req = req
     if (req.method === 'OPTIONS') {
@@ -1060,7 +1137,9 @@ const server = http.createServer(async (req, res) => {
 
     if (
       backupService.isRestoring &&
-      (p.startsWith('/v1/') || p === '/messages' || p === '/chat/completions' || p === '/responses')
+      !p.startsWith('/api/panel/') &&
+      !['/health', '/healthz'].includes(p) &&
+      (req.method !== 'GET' || p.startsWith('/v1/'))
     ) {
       return json(
         res,
@@ -1213,10 +1292,17 @@ const server = http.createServer(async (req, res) => {
         res.end()
       } catch {}
     }
+  } finally {
+    requestDone()
   }
 })
 
 server.on('upgrade', (req, socket, head) => {
+  if (backupService.isRestoring) {
+    socket.end('HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n')
+    return
+  }
+  restoreRuntime.trackSocket(socket)
   if (responsesWs.handleUpgrade(req, socket, head)) return
   if (clusterRoutes.handleUpgrade(req, socket, head)) return
   if (!slotShell.handleUpgrade(req, socket, head)) socket.destroy()

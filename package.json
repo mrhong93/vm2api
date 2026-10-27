@@ -22,11 +22,14 @@
     "format:check": "biome format && node scripts/check-gofmt.mjs && pnpm -C web format:check"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1157.0",
+    "@aws-sdk/lib-storage": "^3.1157.0",
     "croner": "^10.0.1",
     "https-proxy-agent": "^9.1.0",
     "node-fetch": "^2.7.0",
     "socks-proxy-agent": "^10.1.0",
     "ssh2": "^1.17.0",
+    "tar": "^7.5.22",
     "ws": "^8.22.0"
   },
   "devDependencies": {

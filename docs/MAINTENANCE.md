@@ -2,7 +2,7 @@
 
 本仓库为 `zhang2580384/vm2api`，首个独立发行版为 **v2.0.0**，上游基线为 `dofastted/vm2api` 的 **v1.3.226**（`7cd52501c03c03e36493c38e39edc349de7d0c99`）。保留上游版权及 LICENSE。
 
-当前发行版 **v2.2.0** 选择性同步上游 **v1.4.006**（`07edb2cdc0576da1ea9a64bc2d27c00fb4c15aff`），通过 merge 保留双方提交历史。Claude 协议及匹配 payload 保留 v2.0.2 / v1.3.226 兼容实现，不表示与上游完整等价；暂缓项目及验收条件见 [同步记录](UPSTREAM_SYNC_1.4.006.md)。首次独立版本的来源记录保持不变。
+当前发行版 **v2.3.0** 选择性同步上游 **v1.4.006**（`07edb2cdc0576da1ea9a64bc2d27c00fb4c15aff`），通过 merge 保留双方提交历史。Claude 协议及匹配 payload 保留 v2.0.2 / v1.3.226 兼容实现，不表示与上游完整等价；暂缓项目及验收条件见 [同步记录](UPSTREAM_SYNC_1.4.006.md)。首次独立版本的来源记录保持不变。
 
 ## 维护和发布规则
 
@@ -62,3 +62,7 @@ fixture@example.com----gpt-fixture-password----JBSWY3DPEHPK3PXP
 槽位注册与恢复见 [CODEX_REGISTRATION.md](CODEX_REGISTRATION.md)，运行包管理见 [BROWSER_ENVIRONMENT.md](BROWSER_ENVIRONMENT.md)，质量运维配置预览和执行边界见 [OPERATIONS_PREVIEW.md](OPERATIONS_PREVIEW.md)。糖果题原文及判定参考 [ranxi2001/sub2api v2.17.3](https://github.com/ranxi2001/sub2api/tree/v2.17.3)，保留来源说明；门票探针尚未移植。
 
 出口网络从显式地址池分配 /24，并避开已有 Docker 网络及宿主路由。站点自有保留范围通过 `KIN_EGRESS_RESERVED_CIDRS` 配置，逗号分隔 IPv4 CIDR；公开版本不内置某一部署的内网拓扑。已有冲突网络会拒绝使用，不自动迁移。内网部署升级前应在私有环境文件设置保留范围。
+
+## v2.3.0 备份与恢复
+
+完整范围、COS / OSS 配置、上传后本地清理、异机扫描恢复及中断处理见 [BACKUP_RESTORE.md](BACKUP_RESTORE.md)。本版新增数据库迁移 `043_backup_remote.sql`；升级前保留可验证的备份，回退程序时恢复匹配版本的数据。备份只包含控制面可见的持久资料，远程节点独立磁盘和未挂载资料需单独保护。

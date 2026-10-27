@@ -452,8 +452,14 @@ Claude 槽测试走官方 CC 入站（`/v1/messages`）。GPT/Codex 槽测试走
 |------|------|
 | GET/POST | `/backups` |
 | GET/PUT | `/backups/config` |
+| GET/PUT | `/backups/storage` 存储桶设置；密钥/密码仅返回 `has_*`，空输入保留原值 |
+| POST | `/backups/storage/test` 测试表单配置的读写、列举、删除权限，不保存配置 |
+| GET | `/backups/remote?cursor=...` 分页扫描桶内可恢复索引；返回 `items`、`errors`、`next_cursor` |
+| POST | `/backups/remote/restore` 须 `{ "index_key": "...", "confirm": true, "password": "可选原密码" }` |
+| POST | `/backups/:id/upload` 上传/重试已有完整本地备份 |
 | GET | `/backups/:id/download` |
-| POST | `/backups/:id/restore` 须 `{ "confirm": true }` |
+| POST | `/backups/:id/restore` 须 `{ "confirm": true }`，可传 `password`；本地已清理时从原桶下载 |
+| DELETE | `/backups/:id` 清理本地副本，不删除远端归档 |
 | GET | `/proxies` |
 | POST | `/proxies/import` · `/proxies/probe` · `/proxies/geo` |
 | GET/PUT | `/proxies/config` |
@@ -461,7 +467,11 @@ Claude 槽测试走官方 CC 入站（`/v1/messages`）。GPT/Codex 槽测试走
 | POST | `/proxies/:id/enable` · `/disable` · `/bind` · `/unbind` · `/reveal` · `/geo` |
 | DELETE | `/proxies/:id` |
 
-恢复期间协议口 503。每个槽位必须绑定 SOCKS5。`PUT /proxies/config` 的 `disconnect_on_error`（默认 false）：运行时 SOCKS 错误立刻停该槽调度、回写失败并重建 worker；其它健康槽仍可 failover。
+备份接口仅限 master/admin。`GET /backups` 同时返回 `busy`、`restoring`、计划与下次备份时间；记录包含 `upload_status`、`uploaded_at`、`upload_error`、`local_expires_at`、`remote` 和 `file_exists`。`PUT /backups/storage` 接受 `enabled`、`provider`（`cos`/`oss`/`s3`）、`endpoint`、`region`、`bucket`、独立 `prefix`、`force_path_style`、`access_key`、`secret_key`、至少 12 位的 `encryption_password`、`local_retention_hours`（仅 0/24）。OSS 不允许路径寻址。桶内列表与恢复不依赖本机记录。
+
+恢复前须关闭全部槽位并结束请求/浏览器/后台任务；不满足返回 409。缺少解密密码返回 400，损坏内容、解密认证失败、清单及数据库版本不兼容返回 422，存储桶连接或权限错误返回 502；这些预检失败不替换当前资料。预检后暂停服务，创建恢复前快照并执行可回滚替换；恢复期间协议口 503。失败且无法回滚/恢复后台时保持维护状态，返回 `restore_recovery_required`。完整范围、空间/保留策略与中断处理见 [备份与恢复](BACKUP_RESTORE.md)。
+
+每个槽位必须绑定 SOCKS5。`PUT /proxies/config` 的 `disconnect_on_error`（默认 false）：运行时 SOCKS 错误立刻停该槽调度、回写失败并重建 worker；其它健康槽仍可 failover。
 
 `PUT /proxies/config` 的 `follow_proxy_timezone`（默认 true）：绑定一条代理后，该槽采用出口节点的 IANA 时区（persona `# Environment`、指纹、容器 `TZ`）。操作者在创建时或 `PATCH /vms/:id` 手动指定过时区的槽不受影响。
 

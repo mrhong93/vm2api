@@ -58,7 +58,8 @@ export function createCodexMailboxService({
   let timer = null,
     guard = null,
     ticking = false,
-    stopped = false
+    stopped = false,
+    snapshotPaused = false
   const readSlot = (id) => {
     const vm = getSlot(id)
     if (!vm || !isCodexVm(vm)) throw mailboxError('codex_slot_required', 404)
@@ -267,7 +268,7 @@ export function createCodexMailboxService({
     }
   }
   function start(id, { automatic = false } = {}) {
-    if (stopped) throw mailboxError('service_stopped', 409)
+    if (stopped || snapshotPaused) throw mailboxError('service_stopped', 409)
     if (jobs.has(id)) {
       if (jobs.get(id).remote || jobs.get(id).maintenance || jobs.get(id).registration)
         throw mailboxError('mailbox_login_busy', 409)
@@ -311,7 +312,7 @@ export function createCodexMailboxService({
     return vm
   }
   function register(id, input, owner) {
-    if (stopped) throw mailboxError('service_stopped', 409)
+    if (stopped || snapshotPaused) throw mailboxError('service_stopped', 409)
     if (jobs.size) throw mailboxError('mailbox_login_busy', 409)
     if (!owner?.id) throw mailboxError('credential_owner_required', 403)
     const email = normalizeLoginEmail(input)
@@ -531,7 +532,7 @@ export function createCodexMailboxService({
     })
   }
   function remote(id) {
-    if (stopped) throw mailboxError('service_stopped', 409)
+    if (stopped || snapshotPaused) throw mailboxError('service_stopped', 409)
     if (jobs.get(id)?.maintenance) throw mailboxError('mailbox_login_busy', 409)
     if (jobs.has(id)) {
       jobSlot(id)
@@ -579,7 +580,7 @@ export function createCodexMailboxService({
     return publicState(id)
   }
   async function browserTask(id, operation, options = {}) {
-    if (stopped) throw mailboxError('service_stopped', 409)
+    if (stopped || snapshotPaused) throw mailboxError('service_stopped', 409)
     const vm = enabledSlot(id)
     if (operation === 'session' && jobs.has(id)) return control(id, { op: 'session' })
     if (jobs.size) throw mailboxError('mailbox_login_busy', 409)
@@ -650,7 +651,7 @@ export function createCodexMailboxService({
     return entry.promise
   }
   async function tick() {
-    if (ticking || stopped) return
+    if (ticking || stopped || snapshotPaused) return
     ticking = true
     try {
       for (const id of store.ids()) {
@@ -696,7 +697,7 @@ export function createCodexMailboxService({
     }
   }
   const runtimeSlot = (id) => {
-    if (stopped) throw mailboxError('service_stopped', 409)
+    if (stopped || snapshotPaused) throw mailboxError('service_stopped', 409)
     const vm = readSlot(id)
     if (!['running', 'ok', 'paused'].includes(vm.status) || vm.runtime?.stopped === true)
       throw mailboxError('slot_not_running', 409)
@@ -765,6 +766,23 @@ export function createCodexMailboxService({
     }
   }
   return {
+    get busy() {
+      return jobs.size > 0 || ticking
+    },
+    beginSnapshot() {
+      if (jobs.size || ticking)
+        throw Object.assign(new Error('浏览器任务正在执行，请关闭登录或接管窗口后再备份'), {
+          code: 'backup_browser_busy',
+        })
+      snapshotPaused = true
+    },
+    endSnapshot() {
+      snapshotPaused = false
+    },
+    resetAfterRestore() {
+      transientStates.clear()
+      runtimeStates.clear()
+    },
     status(id) {
       readSlot(id)
       return publicState(id)

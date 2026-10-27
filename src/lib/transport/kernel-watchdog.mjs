@@ -176,6 +176,7 @@ export function createKernelWatchdog({
   // vmId -> this tick's pending check/restart, so hold() can wait for it to settle.
   const inflight = new Map()
   let healingBridges = false
+  let telemetryPending = 0
 
   function healBridgesOffPath(vms) {
     if (typeof healBridges !== 'function' || healingBridges) return
@@ -191,6 +192,7 @@ export function createKernelWatchdog({
   async function healTelemetry(vm, at) {
     if (typeof ensureTelemetry !== 'function' || at < (telemetryDue.get(vm.id) || 0)) return
     telemetryDue.set(vm.id, at + telemetryEveryMs)
+    telemetryPending++
     try {
       const result = await ensureTelemetry(vm)
       if (result?.action === 'started')
@@ -199,6 +201,8 @@ export function createKernelWatchdog({
         console.warn(`[kernel-watchdog] ${vm.id} telemetry sidecar relaunch failed: ${result.error}`)
     } catch (error) {
       console.warn(`[kernel-watchdog] ${vm.id} telemetry sidecar check failed: ${error?.message || error}`)
+    } finally {
+      telemetryPending--
     }
   }
 
@@ -322,6 +326,9 @@ export function createKernelWatchdog({
   }
 
   return {
+    get busy() {
+      return inTick || healingBridges || telemetryPending > 0 || inflight.size > 0
+    },
     setConfig(next) {
       config = normalizeKernelWatchdogConfig(next || {})
     },

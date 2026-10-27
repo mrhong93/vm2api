@@ -16,6 +16,7 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { DatabaseSync } from 'node:sqlite'
+import { initializeCredentialSecret } from './secure.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const MIGRATIONS_DIR = path.join(__dirname, 'migrations')
@@ -135,8 +136,16 @@ export function createDatabase({ dataDir, dbPath, migrationsDir } = {}) {
  * Open (or return the already-open) singleton database.
  * @returns {DatabaseSync}
  */
-export function openDatabase({ dataDir, dbPath, migrationsDir } = {}) {
+export function openDatabase({ dataDir, dbPath, migrationsDir, allowRestore = false } = {}) {
   if (_db) return _db
+  if (
+    !allowRestore &&
+    fs.existsSync(path.join(dataDir || path.dirname(resolveDbPath({ dbPath })), 'backup-restore-pending.json'))
+  )
+    throw new Error(
+      '检测到未完成的备份恢复。请先按 docs/BACKUP_RESTORE.md 恢复旧数据库与文件，保留回滚目录，禁止直接删除维护标记启动。',
+    )
+  initializeCredentialSecret(dataDir || path.dirname(resolveDbPath({ dbPath })))
   _db = createDatabase({ dataDir, dbPath, migrationsDir })
   _dbPath = resolveDbPath({ dataDir, dbPath })
   return _db
@@ -234,6 +243,38 @@ export function applyMigrations(db, { migrationsDir } = {}) {
     results.push(file)
   }
   return results
+}
+
+/** Preflight and migrate a disposable restore snapshot before touching live state. */
+export function prepareRestoreDatabase(file) {
+  const db = new DatabaseSync(file)
+  try {
+    const versions = new Set(
+      fs
+        .readdirSync(MIGRATIONS_DIR)
+        .filter((f) => /^\d+.*\.sql$/.test(f))
+        .map((f) => f.split('_')[0]),
+    )
+    const hasMigrations = db
+      .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'")
+      .get()
+    if (
+      hasMigrations &&
+      db
+        .prepare('SELECT version FROM schema_migrations')
+        .all()
+        .some((r) => !versions.has(r.version))
+    )
+      throw new Error('unknown migration')
+    applyMigrations(db)
+    db.exec('PRAGMA wal_checkpoint(TRUNCATE)')
+  } catch {
+    throw Object.assign(new Error('备份数据库版本不兼容，请使用与源实例匹配或更新的版本恢复'), {
+      code: 'backup_version_incompatible',
+    })
+  } finally {
+    db.close()
+  }
 }
 
 /** Run fn inside a transaction (nested calls just run inline). */

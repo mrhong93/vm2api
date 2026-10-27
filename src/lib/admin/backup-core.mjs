@@ -1,175 +1,83 @@
-/**
- * Backup pipeline primitives.
- *
- * Why this module exists: the whole pipeline (VACUUM INTO of a multi-GB
- * database, sha256 of the snapshot, `tar -czf`, sha256 of the archive, staging
- * cleanup) is synchronous. Running it on the gateway's main thread stops the
- * HTTP server from answering any request for the entire backup — a 3-5 minute
- * hole that turns into Cloudflare 524s for /v1 traffic, the panel and /healthz.
- *
- * So the pipeline lives here and is executed by backup-worker.mjs on its own
- * thread with its own database connection, while BackupService stays a thin
- * orchestrator on the main thread.
- *
- * Fallback: when `tar` is unavailable the snapshot is gzipped in memory
- * (only sane below ~2 GiB) — unchanged from the original implementation.
- */
-
+/** Heavy snapshot, hashing, archive and restore validation work runs in a worker. */
 import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import zlib from 'node:zlib'
+import { pipeline } from 'node:stream/promises'
 import { spawnSync } from 'node:child_process'
-import { getDb, vacuumInto } from '../db/database.mjs'
+import * as tar from 'tar'
+import { getDb, vacuumInto, prepareRestoreDatabase } from '../db/database.mjs'
 import { BackupRepo } from '../db/repos/backup-repo.mjs'
+import { encryptArchive, decryptArchive } from './backup-crypto.mjs'
+import { stageState, stageDeployment, validateManifest, rekeyStagedState } from './backup-layout.mjs'
 
 export function stamp(d = new Date()) {
   return d.toISOString().replace(/[:.]/g, '-')
 }
 
-// Chunked on purpose: the DB snapshot and the archive both outgrow Node's
-// ~2 GiB Buffer ceiling, and readFileSync would throw before hashing.
 export function sha256File(file) {
-  const h = crypto.createHash('sha256')
-  const fd = fs.openSync(file, 'r')
+  const hash = crypto.createHash('sha256'),
+    fd = fs.openSync(file, 'r')
   try {
-    const buf = Buffer.allocUnsafe(4 * 1024 * 1024)
-    let read = 0
-    while ((read = fs.readSync(fd, buf, 0, buf.length, null)) > 0) {
-      h.update(read === buf.length ? buf : buf.subarray(0, read))
-    }
+    const buffer = Buffer.allocUnsafe(4 * 1024 * 1024)
+    let bytes
+    while ((bytes = fs.readSync(fd, buffer, 0, buffer.length, null)) > 0) hash.update(buffer.subarray(0, bytes))
   } finally {
     fs.closeSync(fd)
   }
-  return h.digest('hex')
+  return hash.digest('hex')
 }
 
+// Historical export. New archives use the bundled tar implementation on all OSes.
 export function tarAvailable() {
   try {
-    const r = spawnSync('tar', ['--version'], { stdio: 'ignore' })
-    return r.status === 0
+    return spawnSync('tar', ['--version'], { stdio: 'ignore' }).status === 0
   } catch {
     return false
   }
 }
 
-/** Staging dir on the data volume — the DB snapshot can be several GB. */
-function mkdtempOnDataVolume({ tmpDir }) {
-  const base = process.env.KIN_BACKUP_TMPDIR || tmpDir
-  fs.mkdirSync(base, { recursive: true, mode: 0o700 })
-  try {
-    fs.chmodSync(base, 0o700)
-  } catch {}
-  return fs.mkdtempSync(path.join(base, 'kin-backup-'))
-}
-
-/** Drop backups past the retention window (pre_restore keeps the newest 3). */
-function applyRetention(repo, retention) {
-  const drop = [...repo.beyondRetention(retention), ...repo.preRestoreBeyond(3)]
-  for (const rec of drop) {
-    try {
-      if (rec.file_path && fs.existsSync(rec.file_path)) fs.rmSync(rec.file_path, { force: true })
-    } catch {}
-    try {
-      repo.remove(rec.id)
-    } catch {}
-  }
-  return drop.length
-}
-
-/**
- * Run one backup job end to end. Blocking by design — call it from a worker
- * thread (or the test process), never from the gateway's main thread.
- *
- * The caller owns the database connection: open it (openDatabase/openDatabase
- * singleton) before calling and close it afterwards.
- *
- * @returns backup record (status 'ok')
- */
-export function runBackupJob(ctx, { id, createdAt, kind = 'manual', note = null, retention = 7 }) {
+export async function runBackupJob(ctx, { id, createdAt, kind = 'manual', note = null, encryptionPassword, secret }) {
   const repo = new BackupRepo(getDb())
-  let tmp = null
+  fs.mkdirSync(ctx.backupDir, { recursive: true, mode: 0o700 })
+  fs.mkdirSync(ctx.tmpDir, { recursive: true, mode: 0o700 })
+  const tmp = fs.mkdtempSync(path.join(ctx.tmpDir, 'kin-backup-'))
+  let filePath
   try {
-    fs.mkdirSync(ctx.backupDir, { recursive: true, mode: 0o700 })
-    try {
-      fs.chmodSync(ctx.backupDir, 0o700)
-    } catch {}
-    tmp = mkdtempOnDataVolume(ctx)
-
-    // 1. online-consistent DB snapshot (WAL-safe)
-    const dbSnap = path.join(tmp, 'db', 'kin.db')
-    vacuumInto(getDb(), dbSnap)
-    const dbBytes = fs.statSync(dbSnap).size
-
-    // 2. vm files + config files
-    const includes = { db: true, vms: 0, config: 0 }
-    const sha256s = { 'db/kin.db': sha256File(dbSnap) }
-    const vmsDir = ctx.projectRoot ? path.join(ctx.projectRoot, 'vms') : null
-    if (vmsDir && fs.existsSync(vmsDir)) {
-      const outVms = path.join(tmp, 'vms')
-      fs.mkdirSync(outVms, { recursive: true })
-      for (const f of fs.readdirSync(vmsDir)) {
-        if (!/\.json$/.test(f)) continue
-        const src = path.join(vmsDir, f)
-        try {
-          if (!fs.statSync(src).isFile()) continue
-          fs.copyFileSync(src, path.join(outVms, f))
-          fs.chmodSync(path.join(outVms, f), 0o600)
-          sha256s[`vms/${f}`] = sha256File(src)
-          includes.vms += 1
-        } catch {}
-      }
-    }
-    if (ctx.configDir && fs.existsSync(ctx.configDir)) {
-      const outCfg = path.join(tmp, 'config')
-      fs.mkdirSync(outCfg, { recursive: true })
-      for (const f of fs.readdirSync(ctx.configDir)) {
-        if (!/\.json$/.test(f)) continue
-        const src = path.join(ctx.configDir, f)
-        try {
-          if (!fs.statSync(src).isFile()) continue
-          fs.copyFileSync(src, path.join(outCfg, f))
-          sha256s[`config/${f}`] = sha256File(src)
-          includes.config += 1
-        } catch {}
-      }
-    }
-
-    // 3. manifest
+    const dbFile = path.join(tmp, 'db', 'kin.db')
+    vacuumInto(getDb(), dbFile)
+    const staged = stageState(ctx, tmp, sha256File)
+    const recovery = path.join(tmp, 'recovery.json')
+    fs.writeFileSync(recovery, JSON.stringify({ db_secret: secret || null }), { mode: 0o600 })
     const manifest = {
-      version: 1,
-      tool: 'kin-gateway',
+      version: 2,
+      tool: 'vm2api',
       created_at: createdAt,
       kind,
-      includes,
-      sha256s,
+      ...staged,
+      sha256s: {
+        ...staged.sha256s,
+        ...stageDeployment(ctx, tmp, sha256File),
+        'db/kin.db': sha256File(dbFile),
+        'recovery.json': sha256File(recovery),
+      },
+      excluded: ['browser-runtime', 'caches', 'logs', 'panel-sessions', 'remote-unmounted-state', 'vm-disks'],
     }
-    fs.writeFileSync(path.join(tmp, 'manifest.json'), JSON.stringify(manifest, null, 2))
-
-    // 4. archive (tar.gz preferred; gzipped db fallback)
-    let filePath,
-      fileName,
-      noteOut = note
-    if (tarAvailable()) {
-      fileName = `kin-backup-${stamp(new Date(createdAt))}.tar.gz`
-      filePath = path.join(ctx.backupDir, fileName)
-      const r = spawnSync('tar', ['-czf', filePath, '-C', tmp, '.'], { stdio: 'pipe' })
-      if (r.status !== 0) {
-        throw new Error(`tar failed: ${String(r.stderr || '').slice(0, 300)}`)
-      }
-    } else {
-      fileName = `kin-backup-${stamp(new Date(createdAt))}.db.gz`
-      filePath = path.join(ctx.backupDir, fileName)
-      fs.writeFileSync(filePath, zlib.gzipSync(fs.readFileSync(dbSnap)))
-      noteOut = [note, 'tar unavailable — db-only gzip snapshot (vm files rebuilt from DB on restore)']
-        .filter(Boolean)
-        .join(' | ')
-    }
+    fs.writeFileSync(path.join(tmp, 'manifest.json'), JSON.stringify(manifest), { mode: 0o600 })
+    const fileName = `kin-backup-${stamp(new Date(createdAt))}-${id}.tar.gz${encryptionPassword ? '.enc' : ''}`
+    filePath = path.join(ctx.backupDir, fileName)
+    const packed = encryptionPassword ? path.join(ctx.tmpDir, `${id}.tar.gz`) : filePath
     try {
-      fs.chmodSync(filePath, 0o600)
-    } catch {}
-
-    const rec = repo.insert({
+      // Restrict access before tar starts writing sensitive plaintext, including
+      // when an existing backup/tmp parent directory has broader permissions.
+      fs.writeFileSync(packed, '', { flag: 'wx', mode: 0o600 })
+      await tar.c({ gzip: true, file: packed, cwd: tmp, portable: true, strict: true }, ['.'])
+      fs.chmodSync(packed, 0o600)
+      if (encryptionPassword) await encryptArchive(packed, filePath, encryptionPassword)
+    } finally {
+      if (packed !== filePath) fs.rmSync(packed, { force: true })
+    }
+    return repo.insert({
       id,
       created_at: createdAt,
       kind,
@@ -178,36 +86,112 @@ export function runBackupJob(ctx, { id, createdAt, kind = 'manual', note = null,
       file_name: fileName,
       size_bytes: fs.statSync(filePath).size,
       sha256: sha256File(filePath),
-      db_bytes: dbBytes,
-      includes,
-      error: null,
-      note: noteOut,
+      db_bytes: fs.statSync(dbFile).size,
+      includes: staged.includes,
+      note,
+      upload_status: encryptionPassword ? 'pending' : null,
     })
-    applyRetention(repo, retention)
-    return rec
   } catch (e) {
-    try {
-      repo.insert({
-        id,
-        created_at: createdAt,
-        kind,
-        status: 'failed',
-        file_path: null,
-        file_name: null,
-        size_bytes: null,
-        sha256: null,
-        db_bytes: null,
-        includes: null,
-        error: String(e.message || e).slice(0, 500),
-        note,
-      })
-    } catch {}
+    if (filePath) fs.rmSync(filePath, { force: true })
+    repo.insert({
+      id,
+      created_at: createdAt,
+      kind,
+      status: 'failed',
+      error: '备份快照或打包失败，未清理已有备份',
+      note,
+    })
     throw e
   } finally {
-    if (tmp) {
-      try {
-        fs.rmSync(tmp, { recursive: true, force: true })
-      } catch {}
-    }
+    fs.rmSync(tmp, { recursive: true, force: true })
   }
+}
+
+function validateEntry(entry, seen) {
+  const original = entry.path
+  const name = original.replace(/^\.\//, '').replace(/\/$/, '')
+  if (name === '.' || name === '') {
+    if (entry.type !== 'Directory') throw new Error('invalid archive root')
+    return
+  }
+  if (
+    original.includes('\\') ||
+    original.startsWith('/') ||
+    /^[a-z]:/i.test(original) ||
+    name
+      .split('/')
+      .some(
+        (p) =>
+          !p || p === '.' || p === '..' || /[. ]$/.test(p) || /^(con|prn|aux|nul|com[0-9]|lpt[0-9])(?:\.|$)/i.test(p),
+      ) ||
+    /[\x00-\x1f:]/.test(name)
+  )
+    throw new Error('unsafe archive path')
+  if (!['File', 'OldFile', 'Directory'].includes(entry.type))
+    throw new Error('archive links and special files are not supported')
+  const canonical = process.platform === 'win32' ? name.toLowerCase() : name
+  if (seen.has(canonical)) throw new Error('duplicate archive entry')
+  seen.add(canonical)
+  if (seen.size > 1_000_000) throw new Error('too many archive entries')
+}
+
+export async function prepareRestore({ file, sha256, staging, password, targetSecret }) {
+  if (sha256 && sha256File(file) !== sha256)
+    throw Object.assign(new Error('backup archive sha256 mismatch'), { code: 'backup_corrupt' })
+  const decoded = staging + '.decoded.tar.gz'
+  let archive = file
+  try {
+    if (file.endsWith('.enc')) {
+      await decryptArchive(file, decoded, password)
+      archive = decoded
+    }
+    if (file.endsWith('.db.gz')) {
+      fs.mkdirSync(path.join(staging, 'db'), { recursive: true })
+      await pipeline(
+        fs.createReadStream(file),
+        zlib.createGunzip(),
+        fs.createWriteStream(path.join(staging, 'db/kin.db'), { mode: 0o600 }),
+      )
+      fs.writeFileSync(
+        path.join(staging, 'manifest.json'),
+        JSON.stringify({ version: 1, sha256s: { 'db/kin.db': sha256File(path.join(staging, 'db/kin.db')) } }),
+      )
+    } else {
+      const seen = new Set()
+      let failure,
+        bytes = 0
+      const disk = fs.statfsSync(staging)
+      const available = Number(disk.bavail) * Number(disk.bsize)
+      await tar.t({
+        file: archive,
+        strict: true,
+        onReadEntry(entry) {
+          try {
+            validateEntry(entry, seen)
+            bytes += entry.size || 0
+            if (bytes > available || !Number.isSafeInteger(bytes)) throw new Error('insufficient restore staging space')
+          } catch (e) {
+            failure ||= e
+          }
+        },
+      })
+      if (failure) throw Object.assign(new Error('备份包含不安全路径、链接或超出可用空间'), { code: 'backup_corrupt' })
+      await tar.x({ file: archive, cwd: staging, strict: true, preserveOwner: false, noChmod: true })
+    }
+  } catch (e) {
+    if (e.code === 'backup_decryption_failed' || e.code === 'backup_password_required' || e.code === 'backup_corrupt')
+      throw e
+    throw Object.assign(new Error('备份文件损坏或归档格式不受支持'), { code: 'backup_corrupt' })
+  } finally {
+    fs.rmSync(decoded, { force: true })
+  }
+  const manifest = validateManifest(staging, sha256File)
+  prepareRestoreDatabase(path.join(staging, 'db/kin.db'))
+  rekeyStagedState(staging, manifest, targetSecret)
+  return manifest
+}
+
+export async function encryptExisting({ input, output, password }) {
+  await encryptArchive(input, output, password)
+  return { size_bytes: fs.statSync(output).size, sha256: sha256File(output) }
 }

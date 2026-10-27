@@ -1376,12 +1376,16 @@ export class ProxyPool extends EventEmitter {
     this.emit('change')
   }
 
-  startScheduler() {
+  get busy() {
+    return this._probing || this._probeSockets.size > 0
+  }
+
+  startScheduler({ immediate = true } = {}) {
     this.stopScheduler()
     if (!this.state.config.enabled) return
     const min = this.state.config.probe_interval_min || 10
     const ms = min * 60 * 1000
-    void this.probeAll({ onlyEnabled: true }).catch(() => {})
+    if (immediate) void this.probeAll({ onlyEnabled: true }).catch(() => {})
     this._timer = setInterval(() => {
       this.probeAll({ onlyEnabled: true }).catch(() => {})
     }, ms)

@@ -81,7 +81,7 @@ test('createBackup produces tar.gz with manifest + db + vms + config, records ok
   assert.ok(fs.existsSync(path.join(tmp, 'vms', 'vm-b1.json')))
   assert.ok(fs.existsSync(path.join(tmp, 'config', 'routing.json')))
   const manifest = JSON.parse(fs.readFileSync(path.join(tmp, 'manifest.json'), 'utf8'))
-  assert.equal(manifest.version, 1)
+  assert.equal(manifest.version, 2)
   assert.ok(manifest.sha256s['db/kin.db'])
   fs.rmSync(tmp, { recursive: true, force: true })
 })
@@ -131,8 +131,11 @@ test('restoreBackup rolls data back and creates pre_restore record', async () =>
   assert.equal(keys.getById(lost.id), null, 'post-backup key rolled back')
   assert.equal(new SettingsRepo(getDb()).get('marker'), null)
 
-  // old db file kept on disk as safety net
-  assert.ok(fs.existsSync(path.join(dataDir, 'kin.db.pre-restore')))
+  // The pre_restore archive is the safety net; no extra full-size DB copy lingers.
+  assert.equal(
+    fs.readdirSync(dataDir).some((name) => name.includes('.restore-')),
+    false,
+  )
   // pre_restore archive file kept on disk for manual recovery
   const preFiles = fs.readdirSync(path.join(dataDir, 'backups'))
   assert.ok(preFiles.length >= 2, 'manual + pre_restore archives on disk')
@@ -155,8 +158,9 @@ test('restoreBackup rolls data back and creates pre_restore record', async () =>
 test('restore fails when stores cannot rebind to the reopened database', async () => {
   seedVm()
   const rec = await svc.createBackup({ kind: 'manual' })
+  let calls = 0
   svc.onRestored(() => {
-    throw new Error('store rebind failed')
+    if (++calls === 1) throw new Error('store rebind failed')
   })
 
   await assert.rejects(svc.restoreBackup(rec.id), /store rebind failed/)

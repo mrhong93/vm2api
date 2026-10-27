@@ -9,11 +9,25 @@
  */
 
 import crypto from 'node:crypto'
+import fs from 'node:fs'
+import path from 'node:path'
 
 const PREFIX = 'enc:v1:'
 
-function dbSecret() {
-  return process.env.VM2API_DB_SECRET || process.env.KIN_DB_SECRET
+let recoverySecret
+
+export function initializeCredentialSecret(dataDir) {
+  recoverySecret = undefined
+  if (!dataDir) return
+  try {
+    recoverySecret = fs.readFileSync(path.join(dataDir, 'credential-secret.key'), 'utf8').trim() || undefined
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error
+  }
+}
+
+export function dbSecret() {
+  return process.env.VM2API_DB_SECRET || process.env.KIN_DB_SECRET || recoverySecret
 }
 
 export function encryptionEnabled() {

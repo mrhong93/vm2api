@@ -71,6 +71,65 @@ function harness(t, opts = {}) {
   }
 }
 
+test('snapshot refuses an active browser and blocks every browser entry until released', async (t) => {
+  const h = harness(t, {
+    runSlot: async ({ action, signal }) => {
+      if (action === 'prepare') return { ok: true }
+      await new Promise((resolve) => signal.addEventListener('abort', resolve, { once: true }))
+      return { ok: true }
+    },
+  })
+  h.service.remote('vm-01')
+  await new Promise(setImmediate)
+  assert.equal(h.service.busy, true)
+  assert.throws(() => h.service.beginSnapshot(), { code: 'backup_browser_busy' })
+  h.service.cancel('vm-01')
+  await h.service.settle()
+  assert.equal(h.service.busy, false)
+
+  h.service.beginSnapshot()
+  for (const start of [
+    () => h.service.start('vm-01'),
+    () => h.service.remote('vm-01'),
+    () => h.service.register('vm-01', 'fixture@example.invalid', { id: 'fixture-owner' }),
+    () => h.service.runtime('vm-01', 'install'),
+  ])
+    assert.throws(start, { code: 'service_stopped' })
+  for (const start of [
+    () => h.service.runtimeStatus('vm-01'),
+    () => h.service.session('vm-01'),
+    () => h.service.subscription('vm-01'),
+  ])
+    await assert.rejects(start(), { code: 'service_stopped' })
+  h.calls.length = 0
+  await h.service.tick()
+  assert.deepEqual(h.calls, [])
+  h.service.endSnapshot()
+  assert.equal(h.service.start('vm-01').state.running, true)
+  await new Promise(setImmediate)
+  h.service.cancel('vm-01')
+  await h.service.settle()
+})
+
+test('snapshot refuses an in-flight refresh tick even when no browser has started', async (t) => {
+  let finishRefresh
+  const h = harness(t, {
+    refresh: () =>
+      new Promise((resolve) => {
+        finishRefresh = resolve
+      }),
+  })
+  h.store.save('vm-01', { email, password, auto_reauthorize: true, login_armed: true })
+  const ticking = h.service.tick()
+  assert.equal(h.service.busy, true)
+  assert.throws(() => h.service.beginSnapshot(), { code: 'backup_browser_busy' })
+  finishRefresh({ ok: true })
+  await ticking
+  assert.equal(h.service.busy, false)
+  h.service.beginSnapshot()
+  h.service.endSnapshot()
+})
+
 test('remote clipboard is explicit, validated, and absent from status and persisted state', async (t) => {
   const clipboard = 'offline-clipboard-service-fixture'
   let lastControl

@@ -597,6 +597,33 @@ export function createPanelHandler(ctx) {
   // A checkout can change under a live Node process; report its boot version.
   const runningVersion = readLocalVersion(ctx.cfg?.paths?.project)
   const json = (...args) => ctx.json(...args)
+  function backupFailure(res, error, fallback = '备份操作失败，请检查磁盘空间、文件权限和服务日志') {
+    const status = {
+      backup_in_progress: 409,
+      backup_browser_busy: 409,
+      restore_in_progress: 409,
+      restore_slots_running: 409,
+      restore_recovery_required: 503,
+      storage_changed: 409,
+      backup_not_found: 404,
+      backup_file_missing: 404,
+      backup_corrupt: 422,
+      backup_decryption_failed: 422,
+      backup_not_ok: 422,
+      backup_version_incompatible: 422,
+      backup_password_required: 400,
+      invalid_storage_config: 400,
+      storage_disabled: 400,
+      storage_config_unreadable: 400,
+      invalid_interval: 400,
+      invalid_retention: 400,
+      storage_failed: 502,
+    }[error.code]
+    return json(res, status || 500, {
+      ok: false,
+      error: { code: status ? error.code : 'backup_failed', message: status ? error.message : fallback },
+    })
+  }
   const hostUnsupported = (res, vm, cap) => {
     if (slotHost(vm).supports(cap)) return false
     json(res, 409, {
@@ -1381,6 +1408,18 @@ export function createPanelHandler(ctx) {
           }).body,
         )
       }
+      if (backupService.isRestoring && (req.method !== 'GET' || !p.startsWith('/api/panel/backups'))) {
+        return json(res, 503, {
+          ok: false,
+          error: { message: '正在恢复备份，请稍后再操作', code: 'restore_in_progress' },
+        })
+      }
+      if (backupService.isSnapshotting && !['GET', 'HEAD', 'OPTIONS'].includes(req.method)) {
+        return json(res, 409, {
+          ok: false,
+          error: { message: '正在创建备份快照，请完成后再修改配置或操作浏览器', code: 'backup_in_progress' },
+        })
+      }
       if (
         denyIfUserMissesVm(req, res, {
           projectRoot: cfg.paths.project,
@@ -2137,7 +2176,7 @@ export function createPanelHandler(ctx) {
         return json(res, 200, panel.ok(requestLog.ownerBilling({ ownerUserId, since, until, groupBy })))
       }
 
-      // ---- Backups (local auto/manual, download, restore) ----
+      // ---- Backups: local snapshots + encrypted object storage ----
       if (req.method === 'GET' && p === '/api/panel/backups') {
         return json(res, 200, {
           ok: true,
@@ -2145,6 +2184,7 @@ export function createPanelHandler(ctx) {
           config: backupService.getSchedule(),
           next_auto_at: backupService.nextAutoAt(),
           restoring: backupService.isRestoring,
+          busy: backupService.busy,
         })
       }
       if (req.method === 'POST' && p === '/api/panel/backups') {
@@ -2152,11 +2192,7 @@ export function createPanelHandler(ctx) {
           const rec = await backupService.createBackup({ kind: 'manual' })
           return json(res, 201, { ok: true, item: rec })
         } catch (e) {
-          const status = e.code === 'backup_in_progress' ? 409 : 500
-          return json(res, status, {
-            ok: false,
-            error: { message: String(e.message || e), code: e.code || 'backup_failed' },
-          })
+          return backupFailure(res, e)
         }
       }
       if (req.method === 'GET' && p === '/api/panel/backups/config') {
@@ -2172,7 +2208,41 @@ export function createPanelHandler(ctx) {
           const config = backupService.updateSchedule(body || {})
           return json(res, 200, { ok: true, config, next_auto_at: backupService.nextAutoAt() })
         } catch (e) {
-          return json(res, 400, { ok: false, error: { message: String(e.message || e), code: e.code } })
+          return backupFailure(res, e)
+        }
+      }
+      if (
+        p === '/api/panel/backups/storage' ||
+        p === '/api/panel/backups/storage/test' ||
+        p === '/api/panel/backups/remote' ||
+        p === '/api/panel/backups/remote/restore' ||
+        /^\/api\/panel\/backups\/[^/]+\/upload$/.test(p)
+      ) {
+        try {
+          if (req.method === 'GET' && p.endsWith('/storage'))
+            return json(res, 200, { ok: true, storage: backupService.getStorage() })
+          if (req.method === 'GET' && p.endsWith('/remote'))
+            return json(res, 200, {
+              ok: true,
+              ...(await backupService.scanRemote(new URL(req.url, 'http://x').searchParams.get('cursor'))),
+            })
+          const body = await readBody(req, 16 * 1024)
+          if (!body || typeof body !== 'object' || Array.isArray(body))
+            throw Object.assign(new Error('请求内容格式错误'), { code: 'invalid_storage_config' })
+          if (req.method === 'PUT' && p.endsWith('/storage'))
+            return json(res, 200, { ok: true, storage: backupService.updateStorage(body) })
+          if (req.method === 'POST' && p.endsWith('/storage/test'))
+            return json(res, 200, await backupService.testStorage(body))
+          if (req.method === 'POST' && p.endsWith('/remote/restore')) {
+            if (body.confirm !== true)
+              return json(res, 400, { ok: false, error: { message: '请确认恢复操作', code: 'confirm_required' } })
+            return json(res, 200, await backupService.restoreRemote(body.index_key, { password: body.password }))
+          }
+          if (req.method === 'POST' && p.endsWith('/upload'))
+            return json(res, 200, { ok: true, item: await backupService.uploadBackup(p.split('/')[4]) })
+          return json(res, 405, { ok: false, error: { message: '不支持的操作' } })
+        } catch (e) {
+          return backupFailure(res, e)
         }
       }
       if (req.method === 'GET' && /^\/api\/panel\/backups\/[^/]+\/download$/.test(p)) {
@@ -2184,7 +2254,7 @@ export function createPanelHandler(ctx) {
         res.writeHead(
           200,
           corsHeadersForRequest(req, {
-            'content-type': 'application/gzip',
+            'content-type': rec.file_name?.endsWith('.enc') ? 'application/octet-stream' : 'application/gzip',
             'content-length': fs.statSync(rec.file_path).size,
             'content-disposition': `attachment; filename="${rec.file_name}"`,
             'x-kin-backup-sha256': rec.sha256 || '',
@@ -2204,26 +2274,20 @@ export function createPanelHandler(ctx) {
           })
         }
         try {
-          const out = await backupService.restoreBackup(id)
+          const out = await backupService.restoreBackup(id, { password: body.password })
           return json(res, 200, { ok: true, ...out })
         } catch (e) {
-          const map = {
-            backup_not_found: 404,
-            backup_file_missing: 404,
-            restore_in_progress: 409,
-            backup_corrupt: 422,
-            backup_not_ok: 422,
-          }
-          return json(res, map[e.code] || 500, {
-            ok: false,
-            error: { message: String(e.message || e), code: e.code || 'restore_failed' },
-          })
+          return backupFailure(res, e, '恢复失败，已尝试回滚，请检查服务日志')
         }
       }
       if (req.method === 'DELETE' && /^\/api\/panel\/backups\/[^/]+$/.test(p)) {
         const id = p.split('/').pop()
-        if (!backupService.remove(id)) return json(res, 404, { ok: false, error: { message: 'backup not found' } })
-        return json(res, 200, { ok: true, deleted: id })
+        try {
+          if (!backupService.remove(id)) return json(res, 404, { ok: false, error: { message: 'backup not found' } })
+          return json(res, 200, { ok: true, deleted: id })
+        } catch (e) {
+          return backupFailure(res, e)
+        }
       }
 
       // GET /api/panel/dashboard

@@ -106,6 +106,9 @@ export function createCliNodeGuard({
   }
 
   return {
+    get busy() {
+      return inTick
+    },
     tick,
     start({ immediate = true } = {}) {
       if (timer) return
