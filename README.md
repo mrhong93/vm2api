@@ -2,7 +2,7 @@
 
 # vm2api
 
-自维护发行版 **v2.1.0**，选择性同步上游 **v1.4.006** 的调度与稳定性修复，Claude 协议保持 **v1.3.226 / 本分支 v2.0.2** 的兼容行为。更新源及镜像使用 `zhang2580384/vm2api`；维护规则和补丁来源见 [维护说明](docs/MAINTENANCE.md)。
+自维护发行版 **v2.1.1**，选择性同步上游 **v1.4.006** 的调度与稳定性修复，Claude 协议保持 **v1.3.226 / 本分支 v2.0.2** 的兼容行为。更新源及镜像使用 `zhang2580384/vm2api`；维护规则和补丁来源见 [维护说明](docs/MAINTENANCE.md)。
 
 **群内基友共同维护 · QQ 群：1126616545**
 
@@ -11,14 +11,14 @@
 <img src="web/public/images/community-qq.png" alt="QQ 交流群 1126616545" width="260" />
 </details>
 
-**v2.1.0：同步上游新调度与出口恢复机制，完整保留槽位注册、远程浏览器和智能运维配置预览。**
+**v2.1.1：修复受限槽位的浏览器环境安装与检测，补齐 GPT-6.1 Terra 计费，保留槽位注册、远程浏览器和智能运维配置预览。**
 
-注册辅助贯穿密码设置、2FA 确认、加密恢复与凭据入池；质量运维支持自定义题目持久化和无需裁判模型的 21 规则判定。真实定时检测及门票探针尚未接入，详见 [本版说明](docs/releases/v2.1.0.md)。
+注册辅助贯穿密码设置、2FA 确认、加密恢复与凭据入池；质量运维支持自定义题目持久化和无需裁判模型的 21 规则判定。真实定时检测及门票探针尚未接入，详见 [本版说明](docs/releases/v2.1.1.md)。
 
 ### 完全隔离的虚拟机级 AI 订阅转 API 生产网关
 **Next-Generation Fully Isolated VM-Level AI Subscription-to-API Gateway**
 
-[![Release](https://img.shields.io/badge/Release-v2.1.0-blue.svg?style=for-the-badge&logo=github)](https://github.com/zhang2580384/vm2api/releases)
+[![Release](https://img.shields.io/badge/Release-v2.1.1-blue.svg?style=for-the-badge&logo=github)](https://github.com/zhang2580384/vm2api/releases)
 [![License](https://img.shields.io/badge/License-Noncommercial-amber.svg?style=for-the-badge)](LICENSE)
 [![Benchmarks](https://img.shields.io/badge/Benchmarks-Clean%20Verified-00C853?style=for-the-badge&logo=shield)](docs/benchmarks/README.md)
 [![Cluster](https://img.shields.io/badge/Cluster-Multi--VPS%20Ready-7928CA?style=for-the-badge&logo=docker)](docs/DEPLOY.md)
