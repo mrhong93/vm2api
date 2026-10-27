@@ -1408,13 +1408,13 @@ export function createPanelHandler(ctx) {
           }).body,
         )
       }
-      if (backupService.isRestoring && (req.method !== 'GET' || !p.startsWith('/api/panel/backups'))) {
+      if (backupService?.isRestoring && (req.method !== 'GET' || !p.startsWith('/api/panel/backups'))) {
         return json(res, 503, {
           ok: false,
           error: { message: '正在恢复备份，请稍后再操作', code: 'restore_in_progress' },
         })
       }
-      if (backupService.isSnapshotting && !['GET', 'HEAD', 'OPTIONS'].includes(req.method)) {
+      if (backupService?.isSnapshotting && !['GET', 'HEAD', 'OPTIONS'].includes(req.method)) {
         return json(res, 409, {
           ok: false,
           error: { message: '正在创建备份快照，请完成后再修改配置或操作浏览器', code: 'backup_in_progress' },
