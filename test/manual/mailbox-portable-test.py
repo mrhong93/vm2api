@@ -21,13 +21,17 @@ def main():
     parser.add_argument('--image', required=True)
     parser.add_argument('--bundle', required=True, type=Path)
     parser.add_argument('--scripts', type=Path, default=Path(__file__).resolve().parents[2] / 'scripts')
+    parser.add_argument('--work-dir', type=Path, default=Path('/var/tmp'),
+                        help='Disk-backed host directory; do not use tmpfs for the browser installation')
     args = parser.parse_args()
     if os.geteuid() != 0:
         parser.error('Run on a Linux Docker test host as root to prepare the synthetic UID 10005 home')
     bundle = args.bundle.resolve(strict=True)
     scripts = args.scripts.resolve(strict=True)
     runner = (scripts / 'mailbox-runtime-slot.py').read_text()
-    base = Path(tempfile.mkdtemp(prefix='vm2api-portable-fixture-'))
+    # Browser files on host tmpfs are charged as unreclaimable shared memory to
+    # the installing container, invalidating its ordinary 1 GiB runtime limit.
+    base = Path(tempfile.mkdtemp(prefix='vm2api-portable-fixture-', dir=args.work_dir))
     home = base / 'home'
     home.mkdir(mode=0o700)
     os.chown(home, 10005, 987)
