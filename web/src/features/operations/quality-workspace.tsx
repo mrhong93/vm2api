@@ -210,6 +210,7 @@ export function QualityWorkspace() {
       interval: 30,
       enabled: true,
       action: 'record',
+      autoRestore: false,
       reasoningEffort: 'medium',
     })
   }
@@ -431,7 +432,9 @@ export function QualityWorkspace() {
                       <span>
                         {task.action === 'record'
                           ? '不通过仅记录'
-                          : '不通过关闭调度'}
+                          : task.autoRestore
+                            ? '不通过关闭 · 通过恢复'
+                            : '不通过关闭调度'}
                       </span>
                     </div>
                   </button>
@@ -1086,7 +1089,12 @@ function TaskEditor({
                         ? 'border-primary/50 bg-primary/5'
                         : 'hover:bg-muted/40'
                     )}
-                    onClick={() => update({ kind })}
+                    onClick={() =>
+                      update({
+                        kind,
+                        ...(kind === 'probe' ? { autoRestore: false } : {}),
+                      })
+                    }
                   >
                     <KindIcon
                       kind={kind}
@@ -1235,6 +1243,9 @@ function TaskEditor({
                       update({
                         action:
                           event.target.value === 'pause' ? 'pause' : 'record',
+                        ...(event.target.value === 'pause'
+                          ? {}
+                          : { autoRestore: false }),
                       })
                     }
                   >
@@ -1243,6 +1254,24 @@ function TaskEditor({
                   </select>
                 </label>
               </div>
+              {draft.kind === 'candy' && draft.action === 'pause' && (
+                <div className='space-y-1 rounded-lg border p-3'>
+                  <label className='flex items-center gap-2 text-xs font-medium'>
+                    <input
+                      type='checkbox'
+                      className='size-4 accent-emerald-500'
+                      checked={draft.autoRestore === true}
+                      onChange={(event) =>
+                        update({ autoRestore: event.target.checked })
+                      }
+                    />
+                    检测通过后自动恢复调度
+                  </label>
+                  <p className='pl-6 text-[11px] leading-5 text-muted-foreground'>
+                    质量运维任务独立于槽位调度；即使槽位已关闭调度，仍按设定频率检测。开启后，只自动恢复本任务关闭的调度；人工关闭或其他故障状态不会被自动开启。
+                  </p>
+                </div>
+              )}
               <label className='flex items-center justify-between rounded-lg border p-3 text-xs'>
                 <span>
                   启用任务

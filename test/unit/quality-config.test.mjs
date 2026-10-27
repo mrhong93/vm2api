@@ -19,6 +19,7 @@ const task = {
   interval: 17,
   enabled: false,
   action: 'record',
+  autoRestore: false,
   reasoningEffort: 'medium',
 }
 test('quality configs survive store recreation, preserve question text, and isolate owners', () => {
@@ -48,11 +49,24 @@ test('quality settings reject invalid intervals and malformed tasks', () => {
     { kind: 'execute' },
     { action: 'delete' },
     { reasoningEffort: 'extreme' },
+    { autoRestore: 'true' },
   ])
     assert.throws(() => validateQualityTasks([{ ...task, ...patch }]))
   assert.throws(() => validateQualityTasks([task, task]))
+  assert.throws(() => validateQualityTasks([{ ...task, autoRestore: true }]))
+  assert.throws(() => validateQualityTasks([{ ...task, action: 'pause', kind: 'probe', autoRestore: true }]))
   assert.deepEqual(validateQualityTasks([{ ...task, password: 'must not persist' }]), [task])
   assert.throws(() => qualityConfigStore('.', ''), { status: 403 })
+})
+test('auto restore persists only for a candy task that pauses scheduling', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'quality-auto-restore-'))
+  try {
+    const config = qualityConfigStore(root, 'alice')
+    config.save([{ ...task, enabled: true, action: 'pause', autoRestore: true }], 0)
+    assert.equal(qualityConfigStore(root, 'alice').read().tasks[0].autoRestore, true)
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
 })
 test('quality route ACL permits only configuration methods for tenant role', () => {
   assert.equal(authorizePanelRoute('GET', '/api/panel/quality-preview', 'user').ok, true)

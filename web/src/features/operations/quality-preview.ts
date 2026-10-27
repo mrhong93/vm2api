@@ -17,6 +17,7 @@ export type QualityTask = {
   interval: number
   enabled: boolean
   action: 'record' | 'pause'
+  autoRestore: boolean
   reasoningEffort: 'none' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 }
 export type QualityRecord = {

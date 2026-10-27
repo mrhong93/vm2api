@@ -188,7 +188,7 @@ test('same account candy/probe are exclusive; inconclusive probe never pauses', 
   assert.equal(f.runner.records('alice').find((r) => r.kind === 'probe').result, 'error')
   assert.deepEqual(f.paused, [])
 })
-test('minute scheduler persists history, disabled scheduling stays idle, manual disabled tasks never auto-pause', async (t) => {
+test('minute scheduler persists history and runs enabled quality tasks above slot scheduling', async (t) => {
   const f = fixture(t)
   f.runner.tick()
   assert.equal(f.calls.length, 0)
@@ -200,17 +200,95 @@ test('minute scheduler persists history, disabled scheduling stays idle, manual 
   await f.drain()
   assert.equal(f.calls.length, 1)
   f.vm.schedulable = false
+  f.vm.schedule_off = true
+  f.vm.schedule_off_reason = 'disabled'
   f.advance(60001)
   f.runner.tick()
   await f.drain()
-  assert.equal(f.calls.length, 1)
-  assert.equal(f.runner.records('alice')[0].result, 'skipped')
+  assert.equal(f.calls.length, 2)
+  assert.equal(f.runner.records('alice')[0].result, 'passed')
   f.config.save([{ ...task, enabled: false }], 1)
   f.runner.runChat = async () => response('29')
   f.runner.run('alice', 'candy')
   await f.drain()
   assert.deepEqual(f.paused, [])
   assert.equal(f.runner.records('alice')[0].result, 'failed')
+})
+
+test('auto-restore is separate: failed answer owns its pause, scheduled recovery test runs and reopens it', async (t) => {
+  const f = fixture(t)
+  f.config.save([{ ...task, autoRestore: true }], 1)
+  f.runner.runChat = async (id, opts) => {
+    f.calls.push({ id, opts })
+    return response('答案 29')
+  }
+  f.runner.pause = (id, taskId) => {
+    f.paused.push(id)
+    f.vm.schedule_off = true
+    f.vm.schedule_off_reason = 'quality_check_failed'
+    f.vm.quality_schedule_pause_task = taskId
+    f.vm.schedulable = false
+    return { applied: true }
+  }
+  f.runner.resume = (id, taskId) => {
+    assert.equal(id, 'vm-01')
+    assert.equal(taskId, 'candy')
+    f.vm.schedule_off = false
+    f.vm.schedulable = true
+    delete f.vm.schedule_off_reason
+    delete f.vm.quality_schedule_pause_task
+    return { restored: true }
+  }
+  f.runner.run('alice', 'candy')
+  await f.drain()
+  assert.deepEqual(f.paused, ['vm-01'])
+  assert.equal(f.runner.records('alice')[0].result, 'failed')
+  assert.equal(f.runner.records('alice')[0].action, '已关闭槽位调度')
+  assert.equal(f.vm.schedulable, false)
+
+  f.runner.runChat = async (id, opts) => {
+    f.calls.push({ id, opts })
+    return response('答案 21')
+  }
+  f.advance(62000)
+  f.runner.tick()
+  await f.drain()
+  const restored = f.runner.records('alice').find((record) => record.source === 'scheduled')
+  assert.equal(f.calls.length, 2)
+  assert.equal(restored.result, 'passed')
+  assert.equal(restored.action, '检测通过，已恢复调度')
+  assert.equal(f.vm.schedulable, true)
+})
+
+test('auto-restore never reopens a manually disabled slot or an inconclusive result', async (t) => {
+  const f = fixture(t)
+  f.config.save([{ ...task, autoRestore: true }], 1)
+  f.vm.schedulable = false
+  f.vm.schedule_off = true
+  f.vm.schedule_off_reason = 'disabled'
+  let resumes = 0
+  f.runner.resume = () => {
+    resumes += 1
+    return { restored: true }
+  }
+  f.runner.runChat = async (id, opts) => {
+    f.calls.push({ id, opts })
+    return response('答案 21')
+  }
+  f.advance(62000)
+  f.runner.tick()
+  await f.drain()
+  assert.equal(f.calls.length, 1, 'disabled slot still gets its scheduled quality request')
+  assert.equal(resumes, 0, 'operator pause is not owned by the quality task')
+  assert.equal(f.vm.schedulable, false)
+
+  f.vm.schedule_off_reason = 'quality_check_failed'
+  f.vm.quality_schedule_pause_task = 'candy'
+  f.runner.runChat = async () => ({ ...response('21'), complete: false })
+  f.advance(62000)
+  f.runner.tick()
+  await f.drain()
+  assert.equal(resumes, 0, 'inconclusive results do not restore scheduling')
 })
 test('manual execution postpones next scheduled run and stale targets get persistent errors', async (t) => {
   const f = fixture(t)

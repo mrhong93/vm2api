@@ -31,9 +31,13 @@ export function validateQualityTasks(tasks) {
       !['candy', 'probe'].includes(t.kind) ||
       !['answer', 'contains'].includes(t.judge) ||
       !['record', 'pause'].includes(t.action) ||
-      typeof t.enabled !== 'boolean'
+      typeof t.enabled !== 'boolean' ||
+      (t.autoRestore != null && typeof t.autoRestore !== 'boolean')
     )
       fail('任务选项无效')
+    const autoRestore = t.autoRestore === true
+    if (autoRestore && (t.kind !== 'candy' || t.action !== 'pause'))
+      fail('自动恢复仅适用于糖果题检测不通过时关闭调度的任务')
     const reasoningEffort = t.reasoningEffort ?? 'medium'
     if (!QUALITY_EFFORTS.includes(reasoningEffort)) fail('思考强度无效')
     return {
@@ -42,6 +46,7 @@ export function validateQualityTasks(tasks) {
       kind: t.kind,
       judge: t.judge,
       action: t.action,
+      autoRestore,
       enabled: t.enabled,
       reasoningEffort,
     }
@@ -70,6 +75,7 @@ export function qualityConfigStore(projectRoot, owner) {
         tasks: value.tasks.map((task) => ({
           ...task,
           reasoningEffort: task.reasoningEffort ?? 'medium',
+          autoRestore: task.autoRestore === true,
           ...(legacy ? { enabled: false, activatedAt: null } : {}),
         })),
       }

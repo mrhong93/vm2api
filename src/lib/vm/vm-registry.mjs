@@ -527,8 +527,48 @@ function writeSchedule(projectRoot, id, mutate) {
 }
 
 /** 调度关 / 调度开 by the operator. Turning on also clears 不可调度. */
-export function setScheduleOff(projectRoot, id, off, { reason = null, preserveStatus = true } = {}) {
-  return writeSchedule(projectRoot, id, (vm) => applyScheduleOff(vm, off, { reason, preserveStatus }))
+export function setScheduleOff(
+  projectRoot,
+  id,
+  off,
+  { reason = null, qualityTaskId = null, preserveStatus = true } = {},
+) {
+  return writeSchedule(projectRoot, id, (vm) => applyScheduleOff(vm, off, { reason, qualityTaskId, preserveStatus }))
+}
+
+/** Disable a slot for one quality task, without taking over an existing off state. */
+export function setQualityScheduleOff(projectRoot, id, taskId) {
+  let applied = false
+  const vm = writeSchedule(projectRoot, id, (record) => {
+    if (record.schedulable === false || record.schedule_off || record.unschedulable || record.schedule_hold)
+      return false
+    applyScheduleOff(record, true, {
+      reason: 'quality_check_failed',
+      qualityTaskId: taskId,
+      preserveStatus: true,
+    })
+    applied = true
+  })
+  return { applied, vm }
+}
+
+/** Restore only the quality pause still owned by this exact task. */
+export function restoreQualitySchedule(projectRoot, id, taskId) {
+  let restored = false
+  const vm = writeSchedule(projectRoot, id, (record) => {
+    if (
+      record.schedulable !== false ||
+      record.schedule_off !== true ||
+      record.schedule_off_reason !== 'quality_check_failed' ||
+      record.quality_schedule_pause_task !== String(taskId) ||
+      record.unschedulable ||
+      record.schedule_hold
+    )
+      return false
+    applyScheduleOff(record, false, { preserveStatus: true })
+    restored = true
+  })
+  return { restored, vm }
 }
 
 /** A deterministic failure: the slot stays out until an operator action clears it. */

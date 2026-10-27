@@ -4,7 +4,7 @@ import crypto from 'node:crypto'
 import { qualityConfigStore, qualityOwners, qualityTaskRevision } from './quality-config-store.mjs'
 import { judgeCandy, qualityAnswer } from './quality-judge.mjs'
 import { filterVmsForPanel } from './resource-owner.mjs'
-import { listVms, setScheduleOff } from '../vm/vm-registry.mjs'
+import { getVm, listVms, restoreQualitySchedule, setQualityScheduleOff, setScheduleOff } from '../vm/vm-registry.mjs'
 import { isCodexVm } from '../vm/vm-kind.mjs'
 import { summarizeCodexSlot } from '../vm/codex-slot.mjs'
 import { listTestableModels } from './vm-test-chat.mjs'
@@ -76,9 +76,13 @@ export class QualityRunner {
     now = Date.now,
     accountOf = (vm) =>
       isCodexVm(vm) ? summarizeCodexSlot(projectRoot, vm).email || '' : vm.claude?.email || vm.email || '',
-    pause = (id) => setScheduleOff(projectRoot, id, true, { reason: 'quality_check_failed', preserveStatus: true }),
+    pause = (id, taskId = null) =>
+      taskId
+        ? setQualityScheduleOff(projectRoot, id, taskId)
+        : setScheduleOff(projectRoot, id, true, { reason: 'quality_check_failed', preserveStatus: true }),
+    resume = (id, taskId) => restoreQualitySchedule(projectRoot, id, taskId),
   }) {
-    Object.assign(this, { projectRoot, runChat, resolveOwner, list, models, probe, now, accountOf, pause })
+    Object.assign(this, { projectRoot, runChat, resolveOwner, list, models, probe, now, accountOf, pause, resume })
     this.running = new Map()
     this.accountLocks = new Set()
     this.due = new Map()
@@ -101,7 +105,13 @@ export class QualityRunner {
     const account = this.accountOf(vm)
     if (!account || account.toLowerCase() !== task.account.toLowerCase())
       fail('槽位当前账号与任务不一致，请重新选择账号与槽位')
-    return { vm, account, fingerprint: fingerprint(vm, account) }
+    let schedule = vm
+    try {
+      schedule = getVm(this.projectRoot, vm.id) || vm
+    } catch {
+      /* A concurrent slot removal is rechecked before any schedule mutation. */
+    }
+    return { vm, schedule, account, fingerprint: fingerprint(vm, account) }
   }
 
   records(owner) {
@@ -164,9 +174,6 @@ export class QualityRunner {
       if (!['running', 'ok', 'paused'].includes(target.vm.status) || target.vm.runtime?.stopped) {
         record.result = 'skipped'
         record.output = '槽位未开机，未发出检测请求'
-      } else if (record.source === 'scheduled' && target.vm.schedulable === false) {
-        record.result = 'skipped'
-        record.output = '槽位调度已关闭，定时检测保持静置'
       } else if (task.kind === 'probe') {
         const result = await this.probe({
           projectRoot: this.projectRoot,
@@ -232,13 +239,53 @@ export class QualityRunner {
           } else {
             const latest = this.target(owner, current)
             if (latest.fingerprint !== target.fingerprint) record.action = '账号或出口已变更，未关闭调度'
-            else {
-              await this.pause(task.slot)
-              record.action = '已关闭槽位调度'
+            else if (latest.vm.schedulable === false) {
+              const alreadyOwned =
+                task.autoRestore &&
+                latest.schedule.schedule_off === true &&
+                latest.schedule.schedule_off_reason === 'quality_check_failed' &&
+                latest.schedule.quality_schedule_pause_task === task.id
+              record.action = alreadyOwned ? '调度已由本任务关闭，等待检测恢复' : '槽位已由其他状态关闭调度，未接管'
+            } else {
+              const paused = await this.pause(task.slot, task.autoRestore ? task.id : null)
+              record.action = task.autoRestore && !paused?.applied ? '槽位状态已变化，未关闭调度' : '已关闭槽位调度'
             }
           }
         } catch {
           record.action = '权限、目标或调度操作异常，未关闭调度；请检查槽位'
+        }
+      }
+      if (record.result === 'passed' && task.autoRestore) {
+        try {
+          const current = qualityConfigStore(this.projectRoot, owner)
+            .read()
+            .tasks.find((item) => item.id === task.id)
+          if (
+            this.stopped ||
+            !task.enabled ||
+            !current?.enabled ||
+            qualityTaskRevision(current) !== record.taskRevision
+          ) {
+            record.action = '任务已暂停或修改，未恢复调度'
+          } else {
+            const latest = this.target(owner, current)
+            if (latest.fingerprint !== target.fingerprint) record.action = '账号或出口已变更，未恢复调度'
+            else if (
+              latest.vm.schedulable !== false ||
+              latest.schedule.schedule_off !== true ||
+              latest.schedule.schedule_off_reason !== 'quality_check_failed' ||
+              latest.schedule.quality_schedule_pause_task !== task.id ||
+              latest.schedule.unschedulable ||
+              latest.schedule.schedule_hold
+            ) {
+              record.action = '检测已通过，调度由其他状态控制，未自动开启'
+            } else {
+              const resumed = await this.resume(task.slot, task.id)
+              record.action = resumed?.restored ? '检测通过，已恢复调度' : '调度状态已变化，未执行自动恢复'
+            }
+          }
+        } catch {
+          record.action = '权限、目标或调度操作异常，未恢复调度；请检查槽位'
         }
       }
     } catch (error) {

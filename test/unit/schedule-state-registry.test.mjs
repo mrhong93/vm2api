@@ -13,7 +13,9 @@ import {
   resumeSchedulableSlots,
   setScheduleHold,
   setScheduleOff,
+  setQualityScheduleOff,
   setVmSchedulable,
+  restoreQualitySchedule,
   waitForSlotDrain,
 } from '../../src/lib/vm/vm-registry.mjs'
 import { restoreScheduleAfterLiveCredential } from '../../src/lib/oauth/oauth-credentials.mjs'
@@ -55,6 +57,30 @@ test('the operator "on" does not shield a slot from a later failure', (t) => {
   const broken = markUnschedulable(root, 'vm-01', 'oauth_invalid_grant')
   assert.equal(broken.schedulable, false)
   assert.equal(broken.schedule_disabled_reason, 'oauth_invalid_grant')
+})
+
+test('quality recovery only restores the schedule pause owned by that task', (t) => {
+  const root = project([{ id: 'vm-01', status: 'running', schedulable: true }])
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  const paused = setQualityScheduleOff(root, 'vm-01', 'candy-task')
+  assert.equal(paused.applied, true)
+  assert.equal(paused.vm.schedulable, false)
+  assert.equal(read(root, 'vm-01').quality_schedule_pause_task, 'candy-task')
+
+  assert.equal(restoreQualitySchedule(root, 'vm-01', 'other-task').restored, false)
+  assert.equal(restoreQualitySchedule(root, 'vm-01', 'candy-task').restored, true)
+  assert.equal(getVm(root, 'vm-01').schedulable, true)
+  assert.equal('quality_schedule_pause_task' in read(root, 'vm-01'), false)
+
+  setScheduleOff(root, 'vm-01', true, { reason: 'disabled', preserveStatus: true })
+  assert.equal(setQualityScheduleOff(root, 'vm-01', 'candy-task').applied, false)
+  assert.equal(
+    'quality_schedule_pause_task' in read(root, 'vm-01'),
+    false,
+    'operator takeover clears quality ownership',
+  )
+  assert.equal(restoreQualitySchedule(root, 'vm-01', 'candy-task').restored, false)
+  assert.equal(getVm(root, 'vm-01').schedule_disabled_reason, 'disabled')
 })
 
 test('org pause records the upstream error and only an operator action resumes it', (t) => {
