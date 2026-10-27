@@ -7,18 +7,35 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import zlib from 'node:zlib'
 import { spawnSync } from 'node:child_process'
 import { DatabaseSync } from 'node:sqlite'
 import { startGateway, api } from '../harness.mjs'
+import { startBackupApiKernel } from '../fixtures/backup-api-kernel.mjs'
+import { startBackupS3 } from '../fixtures/backup-s3.mjs'
 
-test('manual backup → download → mutate → restore rolls back', async () => {
+test('manual backup → download → mutate → restore rolls back', async (t) => {
   // disable auto backup so record counts stay deterministic
-  const gw = await startGateway({ env: { KIN_BACKUP_DISABLED: '1' } })
+  const kernel = await startBackupApiKernel(t)
+  const gw = await startGateway({ env: { KIN_BACKUP_DISABLED: '1', KIN_API_KERNEL_SOCK: kernel.socket } })
   try {
     // state to protect
     const k1 = await api(gw, 'POST', '/api/panel/api-keys', { body: { name: 'kept' } })
     assert.equal(k1.status, 201)
+    const endpoint = await api(gw, 'POST', '/api/panel/api-endpoints', {
+      body: {
+        name: 'offline fixture',
+        kind: 'custom',
+        protocol: 'anthropic',
+        base_url: 'https://backup.invalid',
+        api_key_entries: [{ api_key: 'sk-fictitious-backup' }],
+        models: [{ name: 'upstream-fixture', alias: 'claude-haiku-4-5-20251001' }],
+      },
+    })
+    assert.equal(endpoint.status, 201, endpoint.text)
+    const inferenceKey = await api(gw, 'POST', '/api/panel/api-keys', {
+      body: { name: 'inference fixture', category: 'api' },
+    })
+    assert.equal(inferenceKey.status, 201, inferenceKey.text)
 
     // 1. create backup
     const b = await api(gw, 'POST', '/api/panel/backups')
@@ -54,7 +71,7 @@ test('manual backup → download → mutate → restore rolls back', async () =>
     assert.ok(fs.existsSync(path.join(tmp, 'db', 'kin.db')))
     assert.ok(fs.existsSync(path.join(tmp, 'manifest.json')))
     const manifest = JSON.parse(fs.readFileSync(path.join(tmp, 'manifest.json'), 'utf8'))
-    assert.equal(manifest.version, 1)
+    assert.equal(manifest.version, 2)
     fs.rmSync(tmp, { recursive: true, force: true })
 
     // 4. mutate state after the backup
@@ -79,6 +96,7 @@ test('manual backup → download → mutate → restore rolls back', async () =>
 
     // gateway still serves inference after restore
     const m = await api(gw, 'POST', '/v1/messages', {
+      headers: { authorization: `Bearer ${inferenceKey.json.item.key}` },
       body: {
         model: 'claude-haiku-4-5-20251001',
         max_tokens: 8,
@@ -86,9 +104,14 @@ test('manual backup → download → mutate → restore rolls back', async () =>
       },
     })
     assert.equal(m.status, 200, m.text)
+    assert.equal(kernel.requests.at(-1).body.model, 'upstream-fixture')
+    assert.equal(kernel.requests.at(-1).headers['x-api-key'], 'sk-fictitious-backup')
 
-    // old db kept on disk as a safety net
-    assert.ok(fs.existsSync(path.join(gw.project, 'data', 'kin.db.pre-restore')))
+    // The pre_restore archive is the safety net, without a duplicate full DB.
+    assert.equal(
+      fs.readdirSync(path.join(gw.project, 'data')).some((name) => name.includes('.restore-')),
+      false,
+    )
 
     // ledger after restore still shows the pre_restore snapshot (undo path)
     const after = await api(gw, 'GET', '/api/panel/backups')
@@ -101,8 +124,9 @@ test('manual backup → download → mutate → restore rolls back', async () =>
   }
 })
 
-test('restore rebinds billing, API scheduler, and routing config without restart', async () => {
-  const gw = await startGateway({ env: { KIN_BACKUP_DISABLED: '1' } })
+test('restore rebinds billing, API scheduler, and routing config without restart', async (t) => {
+  const kernel = await startBackupApiKernel(t)
+  const gw = await startGateway({ env: { KIN_BACKUP_DISABLED: '1', KIN_API_KERNEL_SOCK: kernel.socket } })
   try {
     const routingBefore = await api(gw, 'PUT', '/api/panel/routing', {
       body: {
@@ -115,9 +139,11 @@ test('restore rebinds billing, API scheduler, and routing config without restart
     const endpointBefore = await api(gw, 'POST', '/api/panel/api-endpoints', {
       body: {
         name: 'before-restore',
+        kind: 'custom',
+        protocol: 'anthropic',
         base_url: 'https://before.invalid',
         api_key_entries: [{ api_key: 'sk-before-restore-secret' }],
-        models: [{ name: 'upstream-before', alias: 'backup-model' }],
+        models: [{ name: 'claude-haiku-4-5-20251001', alias: 'claude-haiku-4-5-20251001' }],
       },
     })
     assert.equal(endpointBefore.status, 201, endpointBefore.text)
@@ -174,12 +200,12 @@ test('restore rebinds billing, API scheduler, and routing config without restart
     })
     assert.equal(models.status, 200, models.text)
     const modelIds = (models.json.data || []).map((model) => model.id)
-    assert.ok(modelIds.includes('backup-model'))
+    assert.ok(modelIds.includes('claude-haiku-4-5-20251001'))
     assert.ok(!modelIds.includes('mutated-model'))
 
     const requestId = `restore-rebind-${Date.now()}`
     const inference = await api(gw, 'POST', '/v1/messages', {
-      headers: { 'x-request-id': requestId },
+      headers: { 'x-request-id': requestId, authorization: `Bearer ${apiKey}` },
       body: {
         model: 'claude-haiku-4-5-20251001',
         max_tokens: 8,
@@ -187,11 +213,14 @@ test('restore rebinds billing, API scheduler, and routing config without restart
       },
     })
     assert.equal(inference.status, 200, inference.text)
+    assert.equal(kernel.requests.at(-1).body.model, 'claude-haiku-4-5-20251001')
+    assert.equal(kernel.requests.at(-1).headers['x-api-key'], 'sk-before-restore-secret')
     const logs = await api(gw, 'GET', `/api/panel/request-logs?q=${requestId}&limit=10`)
     assert.equal(logs.status, 200, logs.text)
     const row = (logs.json.items || []).find((item) => item.request_id === requestId)
     assert.ok(row, 'request after restore must persist through the rebound log store')
     assert.equal(row.rate_multiplier, 0)
+    assert.ok(row.total_cost > 0, 'the offline response uses a priced model and nonzero token usage')
     assert.equal(row.actual_cost, 0)
   } finally {
     await gw.stop()
@@ -215,6 +244,81 @@ test('backup config get/update via panel', async () => {
 
     const bad = await api(gw, 'PUT', '/api/panel/backups/config', { body: { retention: 0 } })
     assert.equal(bad.status, 400)
+  } finally {
+    await gw.stop()
+  }
+})
+
+test('bucket panel seals secrets, restricts access and restores after the local ledger is lost', async (t) => {
+  const fixture = await startBackupS3(t)
+  const gw = await startGateway({ env: { KIN_BACKUP_DISABLED: '1' } })
+  try {
+    const saved = await api(gw, 'PUT', '/api/panel/backups/storage', { body: fixture.config })
+    assert.equal(saved.status, 200, saved.text)
+    const config = await api(gw, 'GET', '/api/panel/backups/storage')
+    assert.equal(config.json.storage.has_encryption_password, true)
+    for (const name of ['access_key', 'secret_key', 'encryption_password']) {
+      assert.equal(config.json.storage[name], undefined)
+      assert.ok(!config.text.includes(fixture.config[name]))
+    }
+    assert.equal((await api(gw, 'POST', '/api/panel/backups/storage/test', { body: {} })).status, 200)
+    assert.equal(
+      (
+        await api(gw, 'POST', '/api/panel/users', {
+          body: { username: 'backup-reader', password: 'fixture-password', role: 'user' },
+        })
+      ).status,
+      201,
+    )
+    const login = await fetch(gw.baseUrl + '/api/panel/login', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ username: 'backup-reader', password: 'fixture-password' }),
+    })
+    assert.equal(login.status, 200)
+    const cookie = login.headers.get('set-cookie').split(';')[0]
+    await login.arrayBuffer()
+    for (const [method, endpoint] of [
+      ['GET', '/storage'],
+      ['PUT', '/storage'],
+      ['GET', '/remote'],
+      ['POST', '/remote/restore'],
+      ['POST', '/bak_fixture/upload'],
+    ]) {
+      const denied = await fetch(gw.baseUrl + '/api/panel/backups' + endpoint, {
+        method,
+        headers: { cookie, 'content-type': 'application/json' },
+        body: method === 'GET' ? undefined : '{}',
+      })
+      assert.equal(denied.status, 403)
+      await denied.arrayBuffer()
+    }
+    assert.equal((await api(gw, 'POST', '/api/panel/api-keys', { body: { name: 'before-cloud-backup' } })).status, 201)
+    const backup = await api(gw, 'POST', '/api/panel/backups')
+    assert.equal(backup.status, 201, backup.text)
+    assert.equal(backup.json.item.file_path, null)
+    assert.equal(backup.json.item.upload_status, 'uploaded')
+    assert.equal((await api(gw, 'POST', '/api/panel/api-keys', { body: { name: 'after-cloud-backup' } })).status, 201)
+    const db = new DatabaseSync(path.join(gw.project, 'data/kin.db'))
+    db.exec('DELETE FROM backup_records')
+    db.close()
+    assert.deepEqual((await api(gw, 'GET', '/api/panel/backups')).json.items, [])
+    const remote = await api(gw, 'GET', '/api/panel/backups/remote')
+    assert.equal(remote.status, 200, remote.text)
+    const item = remote.json.items.find((r) => r.id === backup.json.item.id)
+    assert.ok(item)
+    assert.equal(
+      (await api(gw, 'POST', '/api/panel/backups/remote/restore', { body: { index_key: item.index_key } })).status,
+      400,
+    )
+    const restored = await api(gw, 'POST', '/api/panel/backups/remote/restore', {
+      body: { index_key: item.index_key, confirm: true },
+    })
+    assert.equal(restored.status, 200, restored.text)
+    const keys = (await api(gw, 'GET', '/api/panel/api-keys')).json.keys.map((k) => k.name)
+    assert.ok(keys.includes('before-cloud-backup'))
+    assert.ok(!keys.includes('after-cloud-backup'))
+    assert.equal(fs.readdirSync(path.join(gw.project, 'data/backups')).length, 0)
   } finally {
     await gw.stop()
   }

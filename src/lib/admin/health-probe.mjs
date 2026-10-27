@@ -798,7 +798,7 @@ export function createHealthProbeMonitor(opts = {}) {
     if (typeof timer.unref === 'function') timer.unref()
     if (immediate && config.run_on_start) {
       queueMicrotask(() => {
-        runRealProbe().catch(() => {})
+        if (timer) runRealProbe().catch(() => {})
       })
     }
     return { started: true, interval_sec: config.interval_sec, run_on_start: config.run_on_start }
@@ -811,6 +811,9 @@ export function createHealthProbeMonitor(opts = {}) {
   }
 
   return {
+    get busy() {
+      return !!inflight
+    },
     getConfig,
     setConfig,
     getSnapshot,

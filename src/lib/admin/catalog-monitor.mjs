@@ -96,12 +96,17 @@ export async function syncGptCatalog({ projectRoot, vmId = '', catalogClientVers
 export function createCatalogMonitor({ projectRoot, codexCatalogVersion = () => 'auto', log = () => {} } = {}) {
   const timers = []
   let running = false
+  let pending = 0
   const guard = (name, fn) => async () => {
+    if (!running) return
+    pending++
     try {
       const out = await fn()
       log({ event: 'catalog-sync', job: name, status: out?.status ?? (out?.ok === false ? 'error' : 'ok') })
     } catch (error) {
       log({ event: 'catalog-sync', job: name, status: 'error', error: String(error?.message || error) })
+    } finally {
+      pending--
     }
   }
   const modelsDev = guard('models.dev', () => syncModelsDev())
@@ -112,6 +117,9 @@ export function createCatalogMonitor({ projectRoot, codexCatalogVersion = () => 
   })
 
   return {
+    get busy() {
+      return pending > 0
+    },
     start() {
       if (running) return
       running = true

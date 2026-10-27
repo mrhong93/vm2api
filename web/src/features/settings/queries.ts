@@ -1,5 +1,10 @@
 import { queryOptions } from '@tanstack/react-query'
-import type { BackupsPayload, NotifyStatus } from '@/types/panel-routing'
+import type {
+  BackupConfigPayload,
+  BackupStorage,
+  BackupsPayload,
+  NotifyStatus,
+} from '@/types/panel-routing'
 import { api } from '@/lib/api'
 
 export type ChangelogEntry = {
@@ -69,13 +74,22 @@ export function backupsQueryOptions() {
   return queryOptions({
     queryKey: ['panel', 'backups'] as const,
     queryFn: () => api<BackupsPayload>('/api/panel/backups'),
+    refetchInterval: 10_000,
   })
 }
 
 export function backupConfigQueryOptions() {
   return queryOptions({
     queryKey: ['panel', 'backups-config'] as const,
-    queryFn: () => api<Record<string, unknown>>('/api/panel/backups/config'),
+    queryFn: () => api<BackupConfigPayload>('/api/panel/backups/config'),
+  })
+}
+
+export function backupStorageQueryOptions() {
+  return queryOptions({
+    queryKey: ['panel', 'backups-storage'] as const,
+    queryFn: () =>
+      api<{ storage: BackupStorage }>('/api/panel/backups/storage'),
   })
 }
 

@@ -151,25 +151,41 @@ export class ClusterManager {
     this.installs = new Map()
     this.tickets = new Map()
     this._healthTimer = null
+    this._backgroundJobs = new Set()
+    this._stopping = false
   }
 
   start() {
+    this._stopping = false
+    if (this._healthTimer) return
     for (const node of this.repo.list()) this._attach(node)
     this._healthTimer = setInterval(() => {
-      for (const id of this.links.keys()) this._checkHealth(id)
+      for (const id of this.links.keys()) this._background(this._checkHealth(id))
     }, HEALTH_INTERVAL_MS)
     this._healthTimer.unref?.()
   }
 
   async stop() {
+    this._stopping = true
     clearInterval(this._healthTimer)
     this._healthTimer = null
     for (const link of this.links.values()) link.stop()
+    await Promise.allSettled([...this._backgroundJobs])
     const relays = [...this.bridges.values(), ...[...this.slotRelays.values()].flatMap((r) => [r.kernel, r.worker])]
     await Promise.all(relays.map((r) => r.stop().catch(() => {})))
     this.links.clear()
     this.bridges.clear()
     this.slotRelays.clear()
+    this.hosts = new WeakMap()
+    this.hostFacts.clear()
+    this.health.clear()
+    this.directState.clear()
+    this.tickets.clear()
+  }
+
+  _background(promise) {
+    this._backgroundJobs.add(promise)
+    promise.catch(() => {}).finally(() => this._backgroundJobs.delete(promise))
   }
 
   bridgeSocketPath(id) {
@@ -179,15 +195,20 @@ export class ClusterManager {
   _attach(node) {
     const link = new SshLink({ id: node.id, resolveTarget: () => this._targetFor(node.id) })
     link.on('state', (state) => {
+      if (this._stopping) return
       this.logger.log(JSON.stringify({ event: 'cluster-link', node: node.id, state, error: link.error?.code || null }))
       if (state === 'ready') {
         // Host facts first: they carry the platform the health check branches on.
-        Promise.resolve(this.remoteHost(node.id))
-          .catch(() => {})
-          .then(() => this._checkHealth(node.id))
-          .catch(() => {})
-          .finally(() => this._linkState(node.id, state))
-        this._ensureGate(node.id).catch(() => {})
+        this._background(
+          Promise.resolve(this.remoteHost(node.id))
+            .catch(() => {})
+            .then(() => this._checkHealth(node.id))
+            .catch(() => {})
+            .finally(() => {
+              if (!this._stopping) this._linkState(node.id, state)
+            }),
+        )
+        this._background(this._ensureGate(node.id))
       } else {
         this.health.delete(node.id)
         this._linkState(node.id, state)

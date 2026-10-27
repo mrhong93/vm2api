@@ -1,32 +1,19 @@
-/**
- * Worker entry for the backup pipeline.
- *
- * The pipeline (VACUUM INTO + sha256 + tar.gz) is fully synchronous, so it must
- * not run on the gateway's main thread: that is what made auto-backups freeze
- * the whole gateway (HTTP/panel/healthz all stop answering → Cloudflare 524)
- * for the duration of the backup.
- *
- * This worker opens its own SQLite connection (WAL allows the live gateway to
- * keep serving while the snapshot is taken) and posts the finished record back
- * to BackupService. Failures are reported as a message, never thrown across the
- * thread boundary.
- */
-
 import { parentPort, workerData } from 'node:worker_threads'
 import { openDatabase, closeDatabase } from '../db/database.mjs'
-import { runBackupJob } from './backup-core.mjs'
+import { runBackupJob, prepareRestore, encryptExisting, sha256File } from './backup-core.mjs'
 
 try {
-  openDatabase({ dataDir: workerData.dataDir })
-  const rec = runBackupJob(workerData.ctx, workerData.job)
-  parentPort.postMessage({ ok: true, rec })
+  let result
+  if (workerData.mode === 'prepareRestore') result = await prepareRestore(workerData.job)
+  else if (workerData.mode === 'encrypt') result = await encryptExisting(workerData.job)
+  else if (workerData.mode === 'hash') result = sha256File(workerData.job.file)
+  else {
+    openDatabase({ dataDir: workerData.dataDir, dbPath: workerData.dbPath })
+    result = await runBackupJob(workerData.ctx, workerData.job)
+  }
+  parentPort.postMessage({ ok: true, result })
 } catch (e) {
-  parentPort.postMessage({
-    ok: false,
-    error: { message: String((e && e.message) || e), code: (e && e.code) || null },
-  })
+  parentPort.postMessage({ ok: false, error: { message: String(e?.message || e), code: e?.code || null } })
 } finally {
-  try {
-    closeDatabase()
-  } catch {}
+  closeDatabase()
 }

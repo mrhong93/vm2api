@@ -36,9 +36,54 @@ export type PersonaBlock = {
 export type BackupItem = {
   id: string
   created_at?: string
-  size?: number
+  size_bytes?: number
+  status: 'ok' | 'failed'
+  file_name?: string
+  file_exists?: boolean
+  upload_status?: 'pending' | 'uploading' | 'uploaded' | 'failed' | null
+  upload_error?: string | null
+  error?: string | null
+  local_expires_at?: string | null
+  remote?: { index_key?: string } | null
+  includes?: Record<string, number | boolean>
   note?: string
   kind?: string
+}
+export type BackupSchedule = {
+  enabled: boolean
+  interval_hours: number
+  retention: number
+}
+export type BackupConfigPayload = {
+  config: BackupSchedule
+  next_auto_at?: string | null
+}
+export type BackupStorage = {
+  enabled: boolean
+  provider: 'cos' | 'oss' | 's3'
+  endpoint: string
+  region: string
+  bucket: string
+  prefix: string
+  force_path_style: boolean
+  local_retention_hours: 0 | 24
+  has_access_key: boolean
+  has_secret_key: boolean
+  has_encryption_password: boolean
+}
+export type RemoteBackup = {
+  id: string
+  index_key: string
+  file_name: string
+  created_at: string
+  kind: string
+  size_bytes: number
+  encrypted: boolean
+}
+export type RemoteBackupsPayload = {
+  items: RemoteBackup[]
+  errors: { index_key: string; error: string }[]
+  next_cursor?: string | null
 }
 /** `GET/PUT /api/panel/distill`。协议入口蒸馏拦截规则。 */
 export type DistillRules = {
@@ -258,6 +303,8 @@ export type NotifyStatus = {
 
 export type BackupsPayload = {
   items?: BackupItem[]
+  busy?: boolean
+  restoring?: boolean
 }
 
 /** `routing.vm`：槽位默认形态与机器规格。创建时覆盖 memory/vcpus/disk_gb 后固化到槽。 */

@@ -18,6 +18,11 @@ const COLUMNS = [
   'includes_json',
   'error',
   'note',
+  'remote_json',
+  'upload_status',
+  'uploaded_at',
+  'upload_error',
+  'local_expires_at',
 ]
 
 function fromRow(row) {
@@ -26,7 +31,11 @@ function fromRow(row) {
   try {
     includes = row.includes_json ? JSON.parse(row.includes_json) : null
   } catch {}
-  return { ...row, includes }
+  let remote = null
+  try {
+    remote = row.remote_json ? JSON.parse(row.remote_json) : null
+  } catch {}
+  return { ...row, includes, remote }
 }
 
 export class BackupRepo {
@@ -45,6 +54,7 @@ export class BackupRepo {
     this._insert.run(
       ...COLUMNS.map((c) => {
         if (c === 'includes_json') return rec.includes ? JSON.stringify(rec.includes) : (rec.includes_json ?? null)
+        if (c === 'remote_json') return rec.remote ? JSON.stringify(rec.remote) : (rec.remote_json ?? null)
         return rec[c] ?? null
       }),
     )
@@ -55,8 +65,26 @@ export class BackupRepo {
     return fromRow(this._get.get(id))
   }
 
+  update(id, patch) {
+    const allowed = Object.keys(patch).filter((key) => COLUMNS.includes(key) && key !== 'id')
+    if (Object.hasOwn(patch, 'remote')) {
+      patch = { ...patch, remote_json: patch.remote ? JSON.stringify(patch.remote) : null }
+      if (!allowed.includes('remote_json')) allowed.push('remote_json')
+    }
+    if (allowed.length) {
+      this.db
+        .prepare(`UPDATE backup_records SET ${allowed.map((key) => `${key} = ?`).join(', ')} WHERE id = ?`)
+        .run(...allowed.map((key) => patch[key] ?? null), id)
+    }
+    return this.get(id)
+  }
+
   list({ limit = 100 } = {}) {
     return this._list.all(Math.max(1, Math.min(500, Number(limit) || 100))).map(fromRow)
+  }
+
+  all() {
+    return this.db.prepare('SELECT * FROM backup_records ORDER BY created_at DESC').all().map(fromRow)
   }
 
   remove(id) {
@@ -64,8 +92,12 @@ export class BackupRepo {
   }
 
   lastSuccessful({ kinds = null } = {}) {
-    const rows = this.list({ limit: 200 })
-    return rows.find((r) => r.status === 'ok' && (!kinds || kinds.includes(r.kind))) || null
+    const condition = kinds?.length ? ` AND kind IN (${kinds.map(() => '?').join(',')})` : ''
+    return fromRow(
+      this.db
+        .prepare(`SELECT * FROM backup_records WHERE status = 'ok'${condition} ORDER BY created_at DESC LIMIT 1`)
+        .get(...(kinds?.length ? kinds : [])),
+    )
   }
 
   /** Successful non-pre_restore backups beyond `keep` newest. */
