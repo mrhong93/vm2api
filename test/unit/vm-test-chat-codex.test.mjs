@@ -43,6 +43,40 @@ function seedRouting(root) {
   fs.writeFileSync(path.join(configDir, 'routing.json'), JSON.stringify({}))
 }
 
+test('quality completion flag distinguishes a terminal SSE event from a truncated HTTP 200', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-testchat-complete-'))
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  seedCodexVm(root)
+  seedRouting(root)
+  let terminal = false
+  const server = http.createServer(async (req, res) => {
+    for await (const chunk of req) {
+      /* consume request */
+    }
+    res.writeHead(200, { 'content-type': 'text/event-stream' })
+    res.write('data: {"type":"response.output_text.delta","delta":"21"}\n\n')
+    if (terminal)
+      res.write('data: {"type":"response.completed","response":{"status":"completed","model":"gpt-5.4"}}\n\n')
+    res.end()
+  })
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  t.after(() => new Promise((resolve) => server.close(resolve)))
+  const opts = {
+    projectRoot: root,
+    vmId: 'vm-codex-01',
+    model: 'gpt-5.4',
+    prompt: '  exact question\n ',
+    preservePrompt: true,
+    reasoning_effort: 'high',
+    baseUrl: `http://127.0.0.1:${server.address().port}`,
+    apiKey: 'test-key',
+  }
+  const partial = await runVmTestChat(opts)
+  assert.equal(partial.complete, false)
+  terminal = true
+  assert.equal((await runVmTestChat(opts)).complete, true)
+})
+
 async function startLoopbackServer(t, respond) {
   const calls = []
   const server = http.createServer(async (req, res) => {

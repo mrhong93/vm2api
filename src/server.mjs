@@ -42,6 +42,7 @@ import { invalidateLiveCredentialCache } from './lib/admin/panel-live-credential
 import { normalizeHealthProbeConfig, createHealthProbeMonitor, HEALTH_REAL_HEADER } from './lib/admin/health-probe.mjs'
 import { normalizeNotifyConfig, createNotifyMonitor, dispatchNotify } from './lib/admin/notify.mjs'
 import { runVmTestChat } from './lib/admin/vm-test-chat.mjs'
+import { QualityRunner } from './lib/admin/quality-runtime.mjs'
 import { VmTestScheduleRunner } from './lib/admin/vm-test-schedule.mjs'
 import { StickyRouter } from './lib/pool/sticky-router.mjs'
 import { AccountQuota } from './lib/pool/account-quota.mjs'
@@ -463,6 +464,19 @@ healthMonitor = createHealthProbeMonitor({
       apiKey: cfg.api_key,
       unofficial: false,
       extraHeaders: { [HEALTH_REAL_HEADER]: '1' },
+    }),
+})
+const qualityRunner = new QualityRunner({
+  projectRoot: cfg.paths.project,
+  resolveOwner: (owner) => (owner === 'master' ? { role: 'admin', enabled: true } : panelUsers.getById(owner)),
+  runChat: (vmId, params) =>
+    runVmTestChat({
+      projectRoot: cfg.paths.project,
+      vmId,
+      ...params,
+      baseUrl: `http://127.0.0.1:${cfg.port}`,
+      apiKey: cfg.api_key,
+      accountQuota,
     }),
 })
 const vmTestSchedule = new VmTestScheduleRunner({
@@ -1004,6 +1018,7 @@ const handlePanel = createPanelHandler({
   panelUsers,
   requestLog,
   vmTestSchedule,
+  qualityRunner,
   backupService,
   stats,
   persistRoutingPatch,
@@ -1263,6 +1278,7 @@ function shutdown(signal) {
   console.log(`[shutdown] ${signal} — closing`)
   try {
     vmTestSchedule.stop()
+    qualityRunner.stop()
   } catch {}
   try {
     backupService.stopScheduler()
@@ -1321,6 +1337,7 @@ await bootApiKernel(cfg)
 server.listen(cfg.port, cfg.host, () => {
   try {
     vmTestSchedule.start()
+    qualityRunner.start()
   } catch (e) {
     console.warn('[vm-test-schedule] start failed', e?.message || e)
   }

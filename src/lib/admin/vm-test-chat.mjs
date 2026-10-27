@@ -568,6 +568,7 @@ async function consumeMessagesResponse(res) {
       text,
       usage: body?.usage || null,
       stop_reason: body?.stop_reason || null,
+      complete: body?.type === 'message' && ['end_turn', 'stop_sequence'].includes(body?.stop_reason),
       model: body?.model || null,
       vm_id: body?.kin?.vm_id || null,
     }
@@ -577,6 +578,7 @@ async function consumeMessagesResponse(res) {
   let usage = null
   let stopReason = null
   let stopSequence = null
+  let complete = false
   let model = null
   let messageId = null
   let lastError = null
@@ -585,6 +587,7 @@ async function consumeMessagesResponse(res) {
   let buf = ''
   const onEvent = (ev) => {
     if (!ev || typeof ev !== 'object') return
+    if (ev.type === 'message_stop') complete = true
     if (ev.type === 'message_start' && ev.message) {
       if (ev.message.id) messageId = ev.message.id
       if (ev.message.usage) usage = { ...usage, ...ev.message.usage }
@@ -651,6 +654,7 @@ async function consumeMessagesResponse(res) {
     },
     text,
     usage,
+    complete: complete && ['end_turn', 'stop_sequence'].includes(stopReason),
     stop_reason: stopReason,
     model,
   }
@@ -702,6 +706,7 @@ async function consumeResponsesResponse(res) {
       text: extractResponsesText(body),
       usage: body?.usage || null,
       stop_reason: body?.status || body?.stop_reason || null,
+      complete: body?.status === 'completed',
       model: body?.model || null,
       vm_id: body?.kin?.vm_id || null,
     }
@@ -732,7 +737,7 @@ async function consumeResponsesResponse(res) {
       stopReason = ev.response.status || 'completed'
       return
     }
-    if (type === 'error' || type === 'response.failed') {
+    if (type === 'error' || type === 'response.failed' || type === 'response.incomplete') {
       lastError = ev.error || ev.response?.error || ev
     }
     if (ev.model) model = ev.model
@@ -771,6 +776,7 @@ async function consumeResponsesResponse(res) {
     },
     text,
     usage,
+    complete: stopReason === 'completed',
     stop_reason: stopReason,
     model,
   }
@@ -1023,7 +1029,8 @@ export async function runVmTestChat(opts = {}) {
     })
   }
 
-  const prompt = String(opts.prompt || DEFAULT_PROMPT).trim() || DEFAULT_PROMPT
+  const rawPrompt = String(opts.prompt || DEFAULT_PROMPT)
+  const prompt = rawPrompt.trim() ? (opts.preservePrompt ? rawPrompt : rawPrompt.trim()) : DEFAULT_PROMPT
   const params = getModelParams(model) || {}
   const caps = getCapabilities(model) || {}
   const rawEffort = opts.reasoning_effort ?? opts.effort
@@ -1219,6 +1226,7 @@ export async function runVmTestChat(opts = {}) {
     max_tokens: maxTokens,
     status: result?.status || 0,
     stop_reason: result?.stop_reason || result?.body?.stop_reason || null,
+    complete: result?.complete === true,
     usage,
     text: text ? text.slice(0, 4000) : null,
     body: result?.ok ? result.body : null,

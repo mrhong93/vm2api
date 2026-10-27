@@ -10,6 +10,7 @@ import {
   FlaskConical,
   Layers,
   ListChecks,
+  Loader2,
   Pause,
   Pencil,
   Play,
@@ -44,22 +45,30 @@ import {
   CANDY_PROMPT,
   formatRecordDate,
   formatRecordTime,
-  judgeCandy,
-  seedRecords,
   type QualityRecord,
   type QualityTask,
 } from './quality-preview'
 
 const selectClass =
   'h-9 rounded-md border bg-background px-2.5 text-xs outline-none focus:ring-2 focus:ring-ring'
-const resultLabels = { passed: '通过', failed: '答案不符', error: '请求异常' }
+const resultLabels = {
+  running: '检测中',
+  passed: '通过',
+  failed: '检测不通过',
+  error: '无法判断',
+  skipped: '已跳过',
+}
 function ResultBadge({ result }: { result: QualityRecord['result'] }) {
   const Icon =
-    result === 'passed'
-      ? CheckCircle2
-      : result === 'failed'
-        ? XCircle
-        : TriangleAlert
+    result === 'running'
+      ? Loader2
+      : result === 'skipped'
+        ? Clock3
+        : result === 'passed'
+          ? CheckCircle2
+          : result === 'failed'
+            ? XCircle
+            : TriangleAlert
   return (
     <span
       className={cn(
@@ -68,10 +77,16 @@ function ResultBadge({ result }: { result: QualityRecord['result'] }) {
           ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-400'
           : result === 'failed'
             ? 'bg-rose-500/10 text-rose-700 dark:text-rose-400'
-            : 'bg-amber-500/10 text-amber-700 dark:text-amber-400'
+            : result === 'running'
+              ? 'bg-blue-500/10 text-blue-700 dark:text-blue-400'
+              : result === 'skipped'
+                ? 'bg-muted text-muted-foreground'
+                : 'bg-amber-500/10 text-amber-700 dark:text-amber-400'
       )}
     >
-      <Icon className='size-3.5' />
+      <Icon
+        className={cn('size-3.5', result === 'running' && 'animate-spin')}
+      />
       {resultLabels[result]}
     </span>
   )
@@ -97,9 +112,12 @@ export function QualityWorkspace() {
   const config = useQuery({
     queryKey: ['quality-preview'],
     queryFn: () =>
-      api<{ tasks: QualityTask[]; revision: number }>(
-        '/api/panel/quality-preview'
-      ),
+      api<{
+        tasks: QualityTask[]
+        revision: number
+        requiresActivation: boolean
+        runtime: { manual: boolean; scheduled: boolean; probe: boolean }
+      }>('/api/panel/quality-preview'),
   })
   const tasks = config.data?.tasks || []
   const [saving, setSaving] = useState(false)
@@ -109,7 +127,7 @@ export function QualityWorkspace() {
     saveLock.current = true
     setSaving(true)
     try {
-      const result = await api<{ tasks: QualityTask[]; revision: number }>(
+      const result = await api<NonNullable<typeof config.data>>(
         '/api/panel/quality-preview',
         {
           method: 'PUT',
@@ -117,7 +135,7 @@ export function QualityWorkspace() {
         }
       )
       qc.setQueryData(['quality-preview'], result)
-      toast.success('配置已保存到服务器；尚未接入实际检测')
+      toast.success('检测配置已保存')
       return true
     } catch (e) {
       toast.error((e as Error).message)
@@ -127,7 +145,17 @@ export function QualityWorkspace() {
       setSaving(false)
     }
   }
-  const [records, setRecords] = useState(seedRecords)
+  const history = useQuery({
+    queryKey: ['quality-records'],
+    queryFn: () =>
+      api<{ items: QualityRecord[] }>('/api/panel/quality-preview/records'),
+    enabled: config.data?.runtime?.manual === true,
+    refetchInterval: (query) =>
+      query.state.data?.items.some((record) => record.result === 'running')
+        ? 2000
+        : 10000,
+  })
+  const records = history.data?.items || []
   const [selected, setSelected] = useState('all')
   const [checked, setChecked] = useState<string[]>([])
   const [query, setQuery] = useState('')
@@ -135,10 +163,11 @@ export function QualityWorkspace() {
   const [filter, setFilter] = useState('all')
   const [visibleCount, setVisibleCount] = useState(8)
   const [editor, setEditor] = useState<QualityTask | null>(null)
-  const [detail, setDetail] = useState<QualityRecord | null>(null)
+  const [selectedDetail, setDetail] = useState<QualityRecord | null>(null)
+  const detail =
+    records.find((record) => record.id === selectedDetail?.id) || selectedDetail
   const [deleteIds, setDeleteIds] = useState<string[]>([])
-  const [simulation, setSimulation] = useState<QualityTask | null>(null)
-  const [sample, setSample] = useState('21')
+  const [starting, setStarting] = useState<string | null>(null)
   const active = tasks.find((task) => task.id === selected)
   const visibleTasks = tasks.filter((task) =>
     `${task.name} ${task.account} ${task.model} ${task.slot}`
@@ -181,39 +210,36 @@ export function QualityWorkspace() {
       interval: 30,
       enabled: true,
       action: 'record',
+      autoRestore: false,
+      reasoningEffort: 'medium',
     })
   }
-  function simulate() {
-    if (!simulation) return
-    const passed =
-      simulation.kind === 'probe' || judgeCandy(sample, simulation.judge)
-    const record: QualityRecord = {
-      id: previewId(),
-      taskId: simulation.id,
-      taskName: simulation.name,
-      account: simulation.account,
-      slot: simulation.slot,
-      model: simulation.model,
-      prompt: simulation.prompt,
-      kind: simulation.kind,
-      judge: simulation.judge,
-      time: new Date().toISOString(),
-      result: passed ? 'passed' : 'failed',
-      output: simulation.kind === 'probe' ? 'OK' : sample,
-      latency: '—',
-      action: passed
-        ? '保持现状'
-        : simulation.action === 'pause'
-          ? '拟关闭调度'
-          : '仅记录异常',
+  async function runOnce(task: QualityTask) {
+    if (starting || !config.data) return
+    setStarting(task.id)
+    try {
+      const result = await api<{ record: QualityRecord }>(
+        `/api/panel/quality-preview/${encodeURIComponent(task.id)}/run`,
+        {
+          method: 'POST',
+          body: JSON.stringify({ revision: config.data.revision }),
+        }
+      )
+      qc.setQueryData<{ items: QualityRecord[] }>(
+        ['quality-records'],
+        (current) => ({ items: [result.record, ...(current?.items || [])] })
+      )
+      setSelected(task.id)
+      setFilter('all')
+      setRecordQuery('')
+      setDetail(result.record)
+      await qc.invalidateQueries({ queryKey: ['quality-records'] })
+      toast.success('真实检测已启动，结果将自动更新')
+    } catch (error) {
+      toast.error((error as Error).message)
+    } finally {
+      setStarting(null)
     }
-    setRecords((current) => [record, ...current])
-    setSelected(simulation.id)
-    setFilter('all')
-    setRecordQuery('')
-    setSimulation(null)
-    setDetail(record)
-    toast.success('已生成演示记录，未请求模型')
   }
   return (
     <>
@@ -225,6 +251,16 @@ export function QualityWorkspace() {
       )}
       {config.isPending && (
         <p className='mb-3 text-sm'>正在读取已保存的任务…</p>
+      )}
+      {config.data?.requiresActivation && (
+        <p className='mb-3 rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 text-xs text-amber-700 dark:text-amber-300'>
+          旧预览任务已保留。请重新启用需要执行的任务，才会开始真实定时检测。
+        </p>
+      )}
+      {history.isError && (
+        <p role='alert' className='mb-3 text-sm text-destructive'>
+          检测记录读取失败：{history.error.message}
+        </p>
       )}
       <div className='grid min-w-0 gap-4 lg:h-[calc(100dvh-245px)] lg:min-h-[520px] lg:grid-cols-[320px_minmax(0,1fr)] xl:grid-cols-[350px_minmax(0,1fr)]'>
         <aside
@@ -395,8 +431,10 @@ export function QualityWorkspace() {
                       </span>
                       <span>
                         {task.action === 'record'
-                          ? '异常仅记录'
-                          : '异常关闭调度'}
+                          ? '不通过仅记录'
+                          : task.autoRestore
+                            ? '不通过关闭 · 通过恢复'
+                            : '不通过关闭调度'}
                       </span>
                     </div>
                   </button>
@@ -433,13 +471,27 @@ export function QualityWorkspace() {
                   </button>
                   <button
                     className='flex items-center gap-1 text-[11px] text-primary'
-                    onClick={() => {
-                      setSimulation(task)
-                      setSample('21')
-                    }}
+                    disabled={
+                      !!starting ||
+                      saving ||
+                      !config.data?.runtime?.manual ||
+                      records.some(
+                        (record) =>
+                          record.account === task.account &&
+                          record.result === 'running'
+                      )
+                    }
+                    onClick={() => void runOnce(task)}
                   >
                     <Play className='size-3' />
-                    模拟检测
+                    {starting === task.id ||
+                    records.some(
+                      (record) =>
+                        record.account === task.account &&
+                        record.result === 'running'
+                    )
+                      ? '检测中…'
+                      : '立即检测一次'}
                   </button>
                 </div>
               </article>
@@ -449,13 +501,17 @@ export function QualityWorkspace() {
                 <Search className='mx-auto mb-3 size-6 opacity-40' />
                 {tasks.length
                   ? '没有匹配的检测任务'
-                  : '还没有任务，点击新建开始设计'}
+                  : '还没有任务，点击新建开始检测'}
               </div>
             )}
           </div>
           <div className='flex items-center gap-1.5 border-t px-4 py-3 text-[10px] text-muted-foreground'>
             <ShieldCheck className='size-3.5' />
-            {saving ? '正在保存…' : '配置保存到服务器 · 检测尚未执行'}
+            {saving
+              ? '正在保存…'
+              : config.data?.runtime.manual
+                ? '真实检测已接入 · 记录保存到服务器'
+                : '检测服务未启动'}
           </div>
         </aside>
 
@@ -504,8 +560,10 @@ export function QualityWorkspace() {
               >
                 <option value='all'>全部结果</option>
                 <option value='passed'>检测通过</option>
-                <option value='failed'>答案不符</option>
-                <option value='error'>请求异常</option>
+                <option value='failed'>检测不通过</option>
+                <option value='error'>无法判断</option>
+                <option value='running'>检测中</option>
+                <option value='skipped'>已跳过</option>
               </select>
             </div>
           </div>
@@ -552,7 +610,7 @@ export function QualityWorkspace() {
                           ? record.judge === 'answer'
                             ? '最终答案 = 21'
                             : '包含独立数字 21'
-                          : '门票探针（演示）'}{' '}
+                          : '两次门票探针'}{' '}
                         · {record.latency}
                       </p>
                     </td>
@@ -560,7 +618,7 @@ export function QualityWorkspace() {
                       <p
                         className={cn(
                           'mt-1 text-[11px]',
-                          record.action === '拟关闭调度'
+                          record.action === '已关闭槽位调度'
                             ? 'text-amber-700 dark:text-amber-300'
                             : 'text-muted-foreground'
                         )}
@@ -568,7 +626,9 @@ export function QualityWorkspace() {
                         {record.action}
                       </p>
                       <p className='mt-2 text-[10px] text-muted-foreground/65'>
-                        演示记录 · 未执行处理
+                        {record.source === 'scheduled'
+                          ? '定时检测'
+                          : '手动检测'}
                       </p>
                     </td>
                     <td className='px-3 py-4.5 align-top'>
@@ -589,7 +649,9 @@ export function QualityWorkspace() {
               <div className='flex flex-col items-center justify-center gap-2 py-20 text-muted-foreground'>
                 <FileText className='mb-2 size-8 opacity-30' />
                 <p className='text-sm'>暂无匹配记录</p>
-                <p className='text-xs'>调整筛选条件，或模拟一次检测。</p>
+                <p className='text-xs'>
+                  点击任务中的“立即检测一次”，查看真实结果。
+                </p>
                 <Button
                   variant='ghost'
                   size='sm'
@@ -649,7 +711,7 @@ export function QualityWorkspace() {
             </span>
             <SheetTitle>检测记录详情</SheetTitle>
             <SheetDescription>
-              示例记录，用于确认检测与处理信息的展示。
+              真实模型请求结果，完整回答与处理结果均保存到服务器。
             </SheetDescription>
           </SheetHeader>
           {detail && (
@@ -667,6 +729,11 @@ export function QualityWorkspace() {
                   ['检测账号', detail.account],
                   ['模型', detail.model],
                   ['响应耗时', detail.latency],
+                  ['思考强度', detail.reasoningEffort || '模型默认'],
+                  [
+                    '执行方式',
+                    detail.source === 'scheduled' ? '定时检测' : '立即检测',
+                  ],
                 ].map(([name, value]) => (
                   <div key={name}>
                     <dt className='text-muted-foreground'>{name}</dt>
@@ -674,19 +741,46 @@ export function QualityWorkspace() {
                   </div>
                 ))}
               </dl>
+              {detail.probe && (
+                <dl className='grid grid-cols-2 gap-4 rounded-lg border p-4 text-xs'>
+                  {[
+                    [
+                      '打票 / 续接 HTTP',
+                      `${detail.probe.mint_status || '未请求'} / ${detail.probe.continue_status || '未请求'}`,
+                    ],
+                    [
+                      '门票长度 / 续接长度',
+                      `${detail.probe.ticket_length} / ${detail.probe.continue_ticket_length}`,
+                    ],
+                    [
+                      '续接是否返回不同新票',
+                      detail.probe.new_ticket ? '是' : '否',
+                    ],
+                    [
+                      '上报模型（仅展示）',
+                      detail.probe.reported_model || '未返回',
+                    ],
+                  ].map(([label, value]) => (
+                    <div key={label}>
+                      <dt className='text-muted-foreground'>{label}</dt>
+                      <dd className='mt-1.5 break-all'>{value}</dd>
+                    </div>
+                  ))}
+                </dl>
+              )}
               <section>
                 <h3 className='mb-2 flex items-center gap-2 text-sm font-medium'>
                   <KindIcon kind={detail.kind} />
                   {detail.kind === 'candy'
                     ? '糖果题 · 固定答案判定'
-                    : '门票探针（未接入）'}
+                    : '门票探针'}
                 </h3>
                 <p className='text-xs leading-relaxed text-muted-foreground'>
                   {detail.kind === 'candy'
                     ? detail.judge === 'answer'
                       ? '最终答案为 21；允许常见标点、答案前缀和糖果单位，无需裁判模型。'
                       : '包含独立数字 21 即通过，无需裁判模型；下方展示完整回答供人工复核。'
-                    : '探针尚未移植。sub2 原版通过两次请求比较门票，并区分正常、疑似降级与无法判断。'}
+                    : '采用 sub2 两次完整请求与路由 Cookie 比较门票。新票视为疑似降级；网络、授权或不完整流均无法判断，不作为通过。该经验判据不代表服务方质量保证。'}
                 </p>
               </section>
               <section>
@@ -694,13 +788,22 @@ export function QualityWorkspace() {
                 <pre className='overflow-x-auto rounded-lg border bg-muted/30 p-4 font-mono text-xs leading-6 whitespace-pre-wrap'>
                   {detail.kind === 'candy'
                     ? detail.prompt
-                    : 'sub2 门票探针不使用糖果题；执行逻辑尚未接入。'}
+                    : '两次完整请求均为 Reply with OK.；每次使用新的会话，续接仅携带第一发门票与两枚路由 Cookie。'}
                 </pre>
               </section>
               <section>
-                <h3 className='mb-2 text-xs font-medium'>完整回答（演示）</h3>
+                <h3 className='mb-2 text-xs font-medium'>完整回答</h3>
+                {detail.outputTruncated && (
+                  <p className='mb-2 text-xs text-amber-600'>
+                    回答超过保存上限，当前展示前 262144
+                    个字符；判定使用截断前的完整回答。
+                  </p>
+                )}
                 <pre className='rounded-lg border border-primary/15 bg-primary/5 p-4 font-mono text-sm break-words whitespace-pre-wrap'>
-                  {detail.output || '（空响应）'}
+                  {detail.output ||
+                    (detail.result === 'running'
+                      ? '正在真实请求模型，请稍候…'
+                      : '（空响应）')}
                 </pre>
               </section>
               <section className='rounded-lg border p-4'>
@@ -710,95 +813,11 @@ export function QualityWorkspace() {
                 </h3>
                 <p className='mt-2 text-xs'>{detail.action}</p>
                 <p className='mt-1.5 text-xs text-muted-foreground'>
-                  当前为前端预览，未更改账号状态或槽位调度。
+                  请求异常或无法判断只记录，不关闭调度；仅确定不通过时按任务配置处理。暂停任务仍可手动检测，但不自动关闭调度。
                 </p>
               </section>
             </div>
           )}
-        </SheetContent>
-      </Sheet>
-      <Sheet
-        open={!!simulation}
-        onOpenChange={(open) => {
-          if (!open) setSimulation(null)
-        }}
-      >
-        <SheetContent className='w-full sm:max-w-lg'>
-          <SheetHeader className='border-b px-6 py-6'>
-            <SheetTitle>模拟检测</SheetTitle>
-            <SheetDescription>
-              {simulation?.name} · 仅演示判定和记录，不请求模型。
-            </SheetDescription>
-          </SheetHeader>
-          <div className='space-y-5 overflow-y-auto px-6'>
-            {simulation?.kind === 'candy' ? (
-              <>
-                <label className='block space-y-2 text-sm'>
-                  <span>模拟模型回复</span>
-                  <Textarea
-                    aria-label='模拟模型回复'
-                    value={sample}
-                    onChange={(event) => setSample(event.target.value)}
-                    rows={5}
-                  />
-                </label>
-                <div className='flex flex-wrap gap-2'>
-                  {[
-                    '21',
-                    '答案是 21 颗糖果。',
-                    '121',
-                    '不是 21，答案是 20',
-                  ].map((value) => (
-                    <button
-                      key={value}
-                      className='rounded-md border px-2 py-1 text-xs text-muted-foreground hover:text-foreground'
-                      onClick={() => setSample(value)}
-                    >
-                      {value}
-                    </button>
-                  ))}
-                </div>
-                <div className='rounded-lg border bg-muted/20 p-4'>
-                  <div className='mb-2 flex items-center justify-between'>
-                    <span className='text-xs'>
-                      {simulation.judge === 'answer'
-                        ? '最终答案 = 21'
-                        : '包含独立数字 21'}
-                    </span>
-                    <ResultBadge
-                      result={
-                        judgeCandy(sample, simulation.judge)
-                          ? 'passed'
-                          : 'failed'
-                      }
-                    />
-                  </div>
-                  <p className='text-xs leading-5 text-muted-foreground'>
-                    即时规则判定，无需裁判模型。包含匹配可能把否定句中的数字也判为通过。
-                  </p>
-                </div>
-              </>
-            ) : (
-              <div className='rounded-lg border p-4'>
-                <p className='flex items-center gap-2 text-sm'>
-                  <CheckCircle2 className='size-4 text-emerald-500' />
-                  示例响应：HTTP 200 / OK
-                </p>
-                <p className='mt-2 text-xs text-muted-foreground'>
-                  仅展示请求成功时的记录样式，不发送真实探针。
-                </p>
-              </div>
-            )}
-          </div>
-          <SheetFooter className='border-t px-6'>
-            <Button onClick={simulate}>
-              <Play className='size-4' />
-              生成演示记录
-            </Button>
-            <Button variant='outline' onClick={() => setSimulation(null)}>
-              取消
-            </Button>
-          </SheetFooter>
         </SheetContent>
       </Sheet>
       <Sheet
@@ -809,9 +828,9 @@ export function QualityWorkspace() {
       >
         <SheetContent className='w-full sm:max-w-md'>
           <SheetHeader className='px-6 py-6'>
-            <SheetTitle>删除 {deleteIds.length} 个预览任务？</SheetTitle>
+            <SheetTitle>删除 {deleteIds.length} 个检测任务？</SheetTitle>
             <SheetDescription>
-              删除会保存到服务器，刷新后不会恢复；已有演示记录仍保留。
+              删除会保存到服务器，刷新后不会恢复；已有真实检测记录仍保留。
             </SheetDescription>
           </SheetHeader>
           <SheetFooter className='px-6'>
@@ -833,7 +852,7 @@ export function QualityWorkspace() {
               }}
             >
               <Trash2 className='size-4' />
-              删除预览任务
+              删除检测任务
             </Button>
             <Button variant='outline' onClick={() => setDeleteIds([])}>
               取消
@@ -888,6 +907,10 @@ function TaskEditor({
   }
   function save() {
     if (!draft) return
+    if (draft.kind === 'probe' && !/^(gpt-|codex)/i.test(draft.model)) {
+      setError('门票探针仅支持 GPT OAuth 槽位，请选择 GPT 模型或使用糖果题检测')
+      return
+    }
     if (
       !draft.name.trim() ||
       !target?.account ||
@@ -929,7 +952,7 @@ function TaskEditor({
           </span>
           <SheetTitle>{existing ? '编辑检测任务' : '新建检测任务'}</SheetTitle>
           <SheetDescription>
-            配置保存到服务器，刷新后保留。实际检测与异常处理尚未接入。
+            配置持久保存。启用后按分钟定时执行，也可立即检测一次；真实请求会消耗少量额度。
           </SheetDescription>
         </SheetHeader>
         {draft && (
@@ -1066,7 +1089,12 @@ function TaskEditor({
                         ? 'border-primary/50 bg-primary/5'
                         : 'hover:bg-muted/40'
                     )}
-                    onClick={() => update({ kind })}
+                    onClick={() =>
+                      update({
+                        kind,
+                        ...(kind === 'probe' ? { autoRestore: false } : {}),
+                      })
+                    }
                   >
                     <KindIcon
                       kind={kind}
@@ -1078,11 +1106,11 @@ function TaskEditor({
                       )}
                     />
                     <p className='text-sm font-medium'>
-                      {kind === 'probe' ? '门票探针（未接入）' : '糖果题检测'}
+                      {kind === 'probe' ? '门票探针' : '糖果题检测'}
                     </p>
                     <p className='mt-1 text-[11px] text-muted-foreground'>
                       {kind === 'probe'
-                        ? 'sub2 门票探针 · 尚未移植'
+                        ? '仅 GPT OAuth · 两次完整请求'
                         : '题目可编辑，规则校验答案'}
                     </p>
                     {draft.kind === kind && (
@@ -1093,6 +1121,32 @@ function TaskEditor({
               </div>
               {draft.kind === 'candy' && (
                 <div className='space-y-3 rounded-lg border bg-muted/20 p-4'>
+                  <label className='flex flex-col gap-2 text-xs'>
+                    思考强度
+                    <select
+                      aria-label='思考强度'
+                      className={selectClass}
+                      value={draft.reasoningEffort || 'medium'}
+                      disabled={!/^(gpt-|codex)/i.test(draft.model)}
+                      onChange={(event) =>
+                        update({
+                          reasoningEffort: event.target
+                            .value as QualityTask['reasoningEffort'],
+                        })
+                      }
+                    >
+                      <option value='none'>模型默认（不指定）</option>
+                      <option value='low'>low · 低</option>
+                      <option value='medium'>medium · 中</option>
+                      <option value='high'>high · 高</option>
+                      <option value='xhigh'>xhigh · 更高</option>
+                      <option value='max'>max · 最高</option>
+                    </select>
+                    <span className='text-muted-foreground'>
+                      GPT 按所选强度发送；模型不支持时记录真实错误。Claude
+                      沿用当前协议策略。
+                    </span>
+                  </label>
                   <div className='flex items-center justify-between'>
                     <span className='text-xs font-medium'>判定规则</span>
                     <span className='rounded bg-primary/10 px-2 py-0.5 text-[10px] text-primary'>
@@ -1189,18 +1243,41 @@ function TaskEditor({
                       update({
                         action:
                           event.target.value === 'pause' ? 'pause' : 'record',
+                        ...(event.target.value === 'pause'
+                          ? {}
+                          : { autoRestore: false }),
                       })
                     }
                   >
                     <option value='record'>仅记录，不修改调度</option>
-                    <option value='pause'>关闭账号调度</option>
+                    <option value='pause'>检测不通过时关闭槽位调度</option>
                   </select>
                 </label>
               </div>
+              {draft.kind === 'candy' && draft.action === 'pause' && (
+                <div className='space-y-1 rounded-lg border p-3'>
+                  <label className='flex items-center gap-2 text-xs font-medium'>
+                    <input
+                      type='checkbox'
+                      className='size-4 accent-emerald-500'
+                      checked={draft.autoRestore === true}
+                      onChange={(event) =>
+                        update({ autoRestore: event.target.checked })
+                      }
+                    />
+                    检测通过后自动恢复调度
+                  </label>
+                  <p className='pl-6 text-[11px] leading-5 text-muted-foreground'>
+                    质量运维任务独立于槽位调度；即使槽位已关闭调度，仍按设定频率检测。开启后，只自动恢复本任务关闭的调度；人工关闭或其他故障状态不会被自动开启。
+                  </p>
+                </div>
+              )}
               <label className='flex items-center justify-between rounded-lg border p-3 text-xs'>
                 <span>
                   启用任务
-                  <span className='ml-2 text-muted-foreground'>预览开关</span>
+                  <span className='ml-2 text-muted-foreground'>
+                    按频率真实执行
+                  </span>
                 </span>
                 <input
                   type='checkbox'

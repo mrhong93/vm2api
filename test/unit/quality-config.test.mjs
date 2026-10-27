@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import crypto from 'node:crypto'
 import { qualityConfigStore, validateQualityTasks } from '../../src/lib/admin/quality-config-store.mjs'
 import { authorizePanelRoute } from '../../src/lib/admin/panel-acl.mjs'
 
@@ -18,14 +19,16 @@ const task = {
   interval: 17,
   enabled: false,
   action: 'record',
+  autoRestore: false,
+  reasoningEffort: 'medium',
 }
 test('quality configs survive store recreation, preserve question text, and isolate owners', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'quality-config-'))
   try {
     const a = qualityConfigStore(root, 'alice')
-    assert.deepEqual(a.read(), { revision: 0, tasks: [] })
+    assert.deepEqual(a.read(), { revision: 0, tasks: [], requiresActivation: false })
     a.save([task], 0)
-    assert.deepEqual(qualityConfigStore(root, 'alice').read().tasks, [task])
+    assert.deepEqual(qualityConfigStore(root, 'alice').read().tasks, [{ ...task, activatedAt: null }])
     assert.deepEqual(qualityConfigStore(root, 'bob').read().tasks, [])
     assert.throws(() => a.save([], 0), { status: 409 })
     assert.equal(a.read().tasks.length, 1)
@@ -45,15 +48,53 @@ test('quality settings reject invalid intervals and malformed tasks', () => {
     { enabled: 'true' },
     { kind: 'execute' },
     { action: 'delete' },
+    { reasoningEffort: 'extreme' },
+    { autoRestore: 'true' },
   ])
     assert.throws(() => validateQualityTasks([{ ...task, ...patch }]))
   assert.throws(() => validateQualityTasks([task, task]))
+  assert.throws(() => validateQualityTasks([{ ...task, autoRestore: true }]))
+  assert.throws(() => validateQualityTasks([{ ...task, action: 'pause', kind: 'probe', autoRestore: true }]))
   assert.deepEqual(validateQualityTasks([{ ...task, password: 'must not persist' }]), [task])
   assert.throws(() => qualityConfigStore('.', ''), { status: 403 })
+})
+test('auto restore persists only for a candy task that pauses scheduling', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'quality-auto-restore-'))
+  try {
+    const config = qualityConfigStore(root, 'alice')
+    config.save([{ ...task, enabled: true, action: 'pause', autoRestore: true }], 0)
+    assert.equal(qualityConfigStore(root, 'alice').read().tasks[0].autoRestore, true)
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
 })
 test('quality route ACL permits only configuration methods for tenant role', () => {
   assert.equal(authorizePanelRoute('GET', '/api/panel/quality-preview', 'user').ok, true)
   assert.equal(authorizePanelRoute('PUT', '/api/panel/quality-preview', 'user').ok, true)
   assert.equal(authorizePanelRoute('POST', '/api/panel/quality-preview', 'user').ok, false)
   assert.equal(authorizePanelRoute('PUT', '/api/panel/quality-preview', 'super').ok, false)
+  assert.equal(authorizePanelRoute('GET', '/api/panel/quality-preview/records', 'user').ok, true)
+  assert.equal(authorizePanelRoute('POST', '/api/panel/quality-preview/task-a/run', 'user').ok, true)
+  assert.equal(authorizePanelRoute('POST', '/api/panel/quality-preview/task-a/run', 'super').ok, false)
+})
+test('old preview switches require explicit activation, new efforts persist with CAS', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'quality-legacy-'))
+  try {
+    const dir = path.join(root, 'data/quality-preview')
+    fs.mkdirSync(dir, { recursive: true })
+    fs.writeFileSync(
+      path.join(dir, crypto.createHash('sha256').update('alice').digest('hex') + '.json'),
+      JSON.stringify({ revision: 7, tasks: [{ ...task, enabled: true }] }),
+    )
+    const store = qualityConfigStore(root, 'alice')
+    assert.equal(store.read().requiresActivation, true)
+    assert.equal(store.read().tasks[0].enabled, false)
+    const next = store.save([{ ...task, enabled: true, reasoningEffort: 'xhigh' }], 7)
+    assert.equal(next.requiresActivation, false)
+    assert.equal(next.tasks[0].reasoningEffort, 'xhigh')
+    assert.ok(Date.parse(next.tasks[0].activatedAt))
+    assert.throws(() => store.save([], 7), { status: 409 })
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
 })

@@ -60,7 +60,7 @@ export function AppTitle({ version }: { version?: string }) {
               href={REPO_URL}
               target='_blank'
               rel='noreferrer'
-              title='github.com/dofastted/vm2api'
+              title={REPO_URL}
               className={cn(CHIP_CLASS, CHIP_LINK_CLASS, CHIP_PAIR_CLASS)}
             >
               <IconGithub aria-hidden className='size-4 shrink-0' />
@@ -96,10 +96,10 @@ function VersionChip({ version }: { version?: string }) {
   }
   return (
     <a
-      href={`${REPO_URL}/releases/tag/v${version}`}
+      href={`${REPO_URL}/releases`}
       target='_blank'
       rel='noreferrer'
-      title={`v${version} 发布说明`}
+      title='查看发行版本'
       className={cn(CHIP_CLASS, CHIP_LINK_CLASS, VERSION_CHIP_CLASS)}
     >
       <span className='size-2.5 shrink-0 rounded-full bg-primary shadow-[0_0_0_3px] shadow-primary/20' />

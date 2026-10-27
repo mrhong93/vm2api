@@ -234,6 +234,8 @@ function isUserAllowed(method, path) {
   const m = String(method || 'GET').toUpperCase()
   const p = String(path || '')
   if (p === '/api/panel/quality-preview') return m === 'GET' || m === 'PUT'
+  if (p === '/api/panel/quality-preview/records') return m === 'GET'
+  if (/^\/api\/panel\/quality-preview\/[^/]+\/run$/.test(p)) return m === 'POST'
   if (m === 'GET' && (USER_EXACT_GET.has(p) || isRequestLogPath(p) || LOG_STATS_GET.has(p))) return true
   if (m === 'PUT' && p === '/api/panel/onboarding') return true
   if (m === 'POST' && USER_EXACT_POST.has(p)) return true
