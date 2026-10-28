@@ -82,7 +82,7 @@ def browser_context_options(payload, environ=None):
     if slot.get('proxy_mode', 'slot_network') != 'slot_network':
         raise FlowError('slot_egress_mismatch')
     return {
-        'headless': True,
+        'headless': False,
         'viewport': {'width': 1365, 'height': 900},
         'locale': language,
         'timezone_id': zone,
@@ -1214,8 +1214,9 @@ class BrowserLogin:
         os.environ.setdefault('PLAYWRIGHT_BROWSERS_PATH', str(runtime / 'browsers'))
         options = browser_context_options(self.payload)
         with slot_browser_display(runtime) as display_env:
-            if display_env:
-                options.update(headless=False, env=display_env)
+            if not display_env or not display_env.get('DISPLAY'):
+                raise FlowError('browser_display_unavailable')
+            options.update(env=display_env)
             with sync_playwright() as pw:
                 context = pw.chromium.launch_persistent_context(str(profile), **options)
                 context.set_default_timeout(8000)

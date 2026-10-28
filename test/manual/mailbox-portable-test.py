@@ -81,7 +81,18 @@ def main():
         assert facts['supported'] and not facts['installed'], facts
         info = operation('install', bundle)['data']
         assert info['verified'] and info['graphical'] and not info['needs_upgrade'], info
+        assert info['revision'] == 4 and info['version'] == '1.64.1', info
         print('PASS fresh installation: temporary-path graphical launch, screenshot and click', flush=True)
+        display_binary = runtime / 'display/bin/Xvfb'
+        original_mode = display_binary.stat().st_mode & 0o777
+        try:
+            display_binary.chmod(0o644)
+            degraded = operation('status')['data']
+            assert not degraded['graphical'] and degraded['needs_upgrade'], degraded
+        finally:
+            display_binary.chmod(original_mode)
+        assert operation('status')['data']['graphical']
+        print('PASS missing display execution permission requires an environment upgrade', flush=True)
 
         # Exercise the real login runner's headed persistent-context and remote
         # input paths; replace authorization with a local synthetic page only.

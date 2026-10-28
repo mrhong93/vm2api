@@ -149,12 +149,11 @@ export function ProxiesPage() {
     for (const p of list) for (const id of proxyBoundIds(p)) out.set(id, p)
     return out
   }, [list])
-  // 输入即「挑可用节点」：有关键词时只留可绑且有空位的，空关键词仍看全集。
+  // 搜索涵盖已满和禁用节点，便于批量运维；挑空位用显式的「有空位」筛选。
   // 地区之外的全部筛选；地区栏的计数也按它算，所以单独留一个谓词。
   const matchesOthers = useCallback(
     (p: VmProxySnap) =>
       proxyInFilter(p, filter, bindLimit) &&
-      (!deferredQuery || proxyInFilter(p, 'open', bindLimit)) &&
       proxyMatchesQuery(p, deferredQuery, (id) => vmById.get(id)?.name || ''),
     [filter, bindLimit, deferredQuery, vmById]
   )
@@ -454,6 +453,7 @@ export function ProxiesPage() {
               }}
             />
             <ProxyList
+              canEditDomainForward={canManage}
               all={sorted}
               rows={rows}
               vms={vms}

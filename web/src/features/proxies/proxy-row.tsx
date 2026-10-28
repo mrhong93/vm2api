@@ -16,6 +16,7 @@ import {
 import { fmtAgo } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
+import { Checkbox } from '@/components/ui/checkbox'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -96,6 +97,7 @@ export function ProxyRow({
   dragVm,
   pending,
   actions,
+  selection,
 }: {
   proxy: VmProxySnap
   vms: Vm[]
@@ -107,6 +109,7 @@ export function ProxyRow({
   dragVm: string
   pending: ProxyRowPending
   actions: ProxyRowActions
+  selection?: { checked: boolean; onChange: (checked: boolean) => void }
 }) {
   const id = proxy.id || ''
   const { onBind, onUnbind, onProbe } = actions
@@ -183,59 +186,78 @@ export function ProxyRow({
           PROXY_ROW_GRID
         )}
       >
-        <button
-          type='button'
-          aria-expanded={open}
-          aria-controls={detailId}
-          onClick={() => setOpen((v) => !v)}
-          title={open ? '收起详情' : '展开详情'}
-          className='group/name flex min-w-0 basis-full items-center gap-2 rounded-sm text-start focus-visible:outline-2 focus-visible:outline-ring @3xl/plist:basis-auto'
-        >
-          <ChevronDown
-            aria-hidden='true'
-            className={cn(
-              'size-3.5 shrink-0 text-muted-foreground/60 transition-transform duration-200 group-hover/name:text-foreground',
-              !open && '-rotate-90'
-            )}
-          />
-          <span
-            className={cn(
-              'min-w-0 shrink truncate text-[13px] font-medium group-hover/name:underline group-hover/name:underline-offset-2',
-              !proxy.label && !local && 'field-host'
-            )}
+        <div className='flex min-w-0 basis-full items-center gap-2 @3xl/plist:basis-auto'>
+          {selection ? (
+            <Checkbox
+              checked={selection.checked}
+              aria-label={`选择代理 ${name}`}
+              onCheckedChange={(checked) =>
+                selection.onChange(checked === true)
+              }
+            />
+          ) : null}
+          <button
+            type='button'
+            aria-expanded={open}
+            aria-controls={detailId}
+            onClick={() => setOpen((v) => !v)}
+            title={open ? '收起详情' : '展开详情'}
+            className='group/name flex min-w-0 flex-1 items-center gap-2 rounded-sm text-start focus-visible:outline-2 focus-visible:outline-ring'
           >
-            {name}
-          </span>
-          {sub ? (
+            <ChevronDown
+              aria-hidden='true'
+              className={cn(
+                'size-3.5 shrink-0 text-muted-foreground/60 transition-transform duration-200 group-hover/name:text-foreground',
+                !open && '-rotate-90'
+              )}
+            />
             <span
               className={cn(
-                'min-w-0 flex-1 truncate text-[11px] text-muted-foreground',
-                !local && 'field-host'
+                'min-w-0 shrink truncate text-[13px] font-medium group-hover/name:underline group-hover/name:underline-offset-2',
+                !proxy.label && !local && 'field-host'
               )}
             >
-              {sub}
+              {name}
             </span>
-          ) : (
-            <span className='flex-1' />
-          )}
-          {proxy.has_auth ? (
-            <Lock
-              className='size-3 shrink-0 text-muted-foreground'
-              aria-label='已配账密'
-            />
-          ) : null}
-          {error ? (
-            <TriangleAlert
-              className={cn(
-                'size-3.5 shrink-0',
-                dead
-                  ? 'text-[color:var(--status-bad)]'
-                  : 'text-[color:var(--status-warn)]'
-              )}
-              aria-label={`最近错误：${error}`}
-            />
-          ) : null}
-        </button>
+            {sub ? (
+              <span
+                className={cn(
+                  'min-w-0 flex-1 truncate text-[11px] text-muted-foreground',
+                  !local && 'field-host'
+                )}
+              >
+                {sub}
+              </span>
+            ) : (
+              <span className='flex-1' />
+            )}
+            {proxy.has_auth ? (
+              <Lock
+                className='size-3 shrink-0 text-muted-foreground'
+                aria-label='已配账密'
+              />
+            ) : null}
+            {proxy.domain_forward && !local ? (
+              <span
+                className='shrink-0 rounded bg-primary/10 px-1 text-[10px] text-primary'
+                title='已开启域名转发'
+              >
+                域名
+              </span>
+            ) : null}
+            {error ? (
+              <TriangleAlert
+                className={cn(
+                  'size-3.5 shrink-0',
+                  dead
+                    ? 'text-[color:var(--status-bad)]'
+                    : 'text-[color:var(--status-warn)]'
+                )}
+                aria-label={`最近错误：${error}`}
+              />
+            ) : null}
+          </button>
+        </div>
 
         <GeoText proxy={proxy} local={local} />
 

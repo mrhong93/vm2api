@@ -1,5 +1,6 @@
 """Offline browser fixtures: all MS/OpenAI requests served locally by route()."""
 import importlib.util
+import contextlib
 import json
 import os
 import subprocess
@@ -7,6 +8,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
@@ -23,9 +25,22 @@ class PureTests(unittest.TestCase):
             {'LANG': 'en_US.UTF-8', 'TZ': 'America/New_York', 'HTTPS_PROXY': 'http://unused.invalid:9'})
         self.assertEqual(options['locale'], 'zh-CN')
         self.assertEqual(options['timezone_id'], 'Asia/Shanghai')
+        self.assertFalse(options['headless'])
         self.assertNotIn('proxy', options)
         self.assertIn('--no-proxy-server', options['args'])
         self.assertIn('--disable-quic', options['args'])
+
+    def test_missing_display_address_fails_before_starting_browser(self):
+        for display_env in [{}, {'PATH': '/fixture-only'}]:
+            with self.subTest(display=display_env), tempfile.TemporaryDirectory() as runtime:
+                flow = mod.BrowserLogin({'email': 'fixture@example.invalid',
+                    'slot_environment': {'locale': 'en_US.UTF-8', 'timezone': 'UTC'}})
+                with patch.dict(os.environ, {'KIN_MAILBOX_ROOT': runtime}), \
+                        patch.object(mod, 'slot_browser_display', return_value=contextlib.nullcontext(display_env)), \
+                        patch('playwright.sync_api.sync_playwright') as launch:
+                    with self.assertRaisesRegex(mod.FlowError, 'browser_display_unavailable'):
+                        flow.run()
+                    launch.assert_not_called()
 
     def test_legacy_slots_resolve_guest_locale_and_reject_invalid_identity(self):
         options = mod.browser_context_options({}, {'LC_ALL': 'ja_JP.UTF-8', 'LANG': 'en_US.UTF-8', 'TZ': 'Asia/Tokyo'})

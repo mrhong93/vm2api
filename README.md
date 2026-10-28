@@ -2,7 +2,7 @@
 
 # vm2api
 
-自维护发行版 **v2.3.0**，选择性同步上游 **v1.4.006** 的调度与稳定性修复，Claude 协议保持 **v1.3.226 / 本分支 v2.0.2** 的兼容行为。更新源及镜像使用 `zhang2580384/vm2api`；维护规则和补丁来源见 [维护说明](docs/MAINTENANCE.md)。
+自维护发行版 **v2.4.0**，选择性同步上游 **v1.4.006** 的调度与稳定性修复，Claude 协议保持 **v1.3.226 / 本分支 v2.0.2** 的兼容行为。更新源及镜像使用 `zhang2580384/vm2api`；维护规则和补丁来源见 [维护说明](docs/MAINTENANCE.md)。
 
 **群内基友共同维护 · QQ 群：1126616545**
 
@@ -11,7 +11,9 @@
 <img src="web/public/images/community-qq.png" alt="QQ 交流群 1126616545" width="260" />
 </details>
 
-**v2.3.0：从完整备份到云端恢复，补齐账号、槽位与运维资料的恢复链路；支持 COS / OSS / S3，上传校验后释放本机空间。**
+**v2.4.0：代理批量运维与图形浏览器环境核验，减少逐条配置成本，让槽位运行模式和升级状态可见。**
+
+代理列表支持多选、全选当前筛选结果和批量域名转发，提供逐条进度、失败原因及单项重试。浏览器环境显示 Playwright 版本、r4 修订号和图形状态，升级旧包保留会话；缺少显示环境时明确停止登录。图形运行包构建与安装自 v2.1.2 已开源发布，升级控制面后仍须检查槽位环境。操作与验证范围见 [v2.4.0 发行说明](docs/releases/v2.4.0.md)。
 
 数据库、账号凭据、绑定、槽位授权、浏览器会话和质量运维资料统一备份；云端归档使用密码加密，校验上传后可立即清理本地副本或最多保留 24 小时。新实例也能扫描存储桶中的独立索引，选择备份下载、预检并恢复；恢复期间暂停后台写入，失败回滚，部署配置仅作为参考保存。详见 [备份与恢复](docs/BACKUP_RESTORE.md)和 [v2.3.0 发行说明](docs/releases/v2.3.0.md)。
 
@@ -20,7 +22,7 @@
 ### 完全隔离的虚拟机级 AI 订阅转 API 生产网关
 **Next-Generation Fully Isolated VM-Level AI Subscription-to-API Gateway**
 
-[![Release](https://img.shields.io/badge/Release-v2.3.0-blue.svg?style=for-the-badge&logo=github)](https://github.com/zhang2580384/vm2api/releases)
+[![Release](https://img.shields.io/badge/Release-v2.4.0-blue.svg?style=for-the-badge&logo=github)](https://github.com/zhang2580384/vm2api/releases)
 [![License](https://img.shields.io/badge/License-Noncommercial-amber.svg?style=for-the-badge)](LICENSE)
 [![Benchmarks](https://img.shields.io/badge/Benchmarks-Clean%20Verified-00C853?style=for-the-badge&logo=shield)](docs/benchmarks/README.md)
 [![Cluster](https://img.shields.io/badge/Cluster-Multi--VPS%20Ready-7928CA?style=for-the-badge&logo=docker)](docs/DEPLOY.md)

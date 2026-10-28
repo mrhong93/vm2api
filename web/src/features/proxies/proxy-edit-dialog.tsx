@@ -212,14 +212,20 @@ export function ProxyEditDialog({
             账密不会回显。留空表示保持原值。
           </p>
           {localProxy ? null : (
-            <label className='flex items-center gap-2 text-sm'>
-              <input
-                type='checkbox'
-                checked={domainForward}
-                onChange={(e) => setDomainForward(e.target.checked)}
-              />
-              域名转发（IPv6-only 出口按主机名 CONNECT，不回落 IPv4）
-            </label>
+            <div className='space-y-1'>
+              <label className='flex items-center gap-2 text-sm'>
+                <input
+                  type='checkbox'
+                  checked={domainForward}
+                  onChange={(e) => setDomainForward(e.target.checked)}
+                />
+                域名转发（按 DNS 记录将目标交给代理解析）
+              </label>
+              <p className='text-xs text-muted-foreground'>
+                适用于按 IP 连接失败、按域名连接正常的代理；不强制 IPv6。
+                开关变更后出口会短暂断开。
+              </p>
+            </div>
           )}
           {passwordWithoutUser ? (
             <p className='text-xs text-[color:var(--status-bad)]'>
