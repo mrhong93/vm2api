@@ -58,9 +58,9 @@ def status():
     info.update(installed=managed or legacy, managed=managed, legacy=bool(legacy),
                 version=portable.get('version') if managed else VERSION if legacy else None,
                 revision=portable.get('revision') if managed else None,
-                graphical=graphical,
+                graphical=graphical, native_input=managed and portable.get('native_input') is True,
                 needs_upgrade=bool((legacy and not managed) or (managed and (
-                    portable.get('revision', 0) < 4 or not graphical))))
+                    portable.get('revision', 0) < 5 or not graphical or not portable.get('native_input')))))
     return info
 
 
@@ -104,12 +104,17 @@ def verify(root):
     code = '''import importlib.metadata, importlib.util, os
 from pathlib import Path
 from playwright.sync_api import sync_playwright
+from Xlib import display as native_display
 assert importlib.metadata.version('playwright') == '1.64.1'
 root = Path(os.environ['KIN_MAILBOX_ROOT'])
 spec = importlib.util.spec_from_file_location('mailbox_display', root / 'display/runtime.py')
 display = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(display)
 with display.slot_browser_display(root) as env, sync_playwright() as p:
+ os.environ.update(DISPLAY=env['DISPLAY'], XAUTHORITY=env['XAUTHORITY'])
+ native = native_display.Display()
+ assert native.has_extension('XTEST')
+ native.close()
  b = p.chromium.launch(headless=False, env=env, args=['--disable-dev-shm-usage', '--disable-background-networking', '--no-proxy-server'])
  c = b.new_context(service_workers='block')
  c.route('**/*', lambda route: route.abort())
@@ -173,7 +178,7 @@ def install(stream, expected):
                 raise RuntimeFailure('browser_runtime_invalid')
         if metadata.get('version') != VERSION:
             raise RuntimeFailure('browser_runtime_invalid')
-        if metadata.get('revision') != 4 or not (temp / 'display/runtime.py').is_file():
+        if metadata.get('revision') != 5 or metadata.get('native_input') is not True or not (temp / 'display/runtime.py').is_file():
             raise RuntimeFailure('browser_runtime_invalid')
         # venv Python uses the selected guest's interpreter, never a builder absolute path.
         bin_dir = temp / 'venv/bin'

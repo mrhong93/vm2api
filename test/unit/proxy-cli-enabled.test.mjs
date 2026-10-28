@@ -84,6 +84,22 @@ test('rebind of the same exit heals a stale false flag', () => {
   }
 })
 
+test('binding preserves domain forwarding through subsequent slot record writes', () => {
+  const root = tmpRoot()
+  try {
+    writeVm(root, boundSlot({ proxy: null, schedulable: false }))
+    bindVmProxy(root, 'vm-01', { ...SOCKS, domain_forward: true })
+    assert.equal(getVm(root, 'vm-01').proxy.domain_forward, true)
+    patchVmRecord(root, 'vm-01', { status: 'paused' })
+    assert.equal(getVm(root, 'vm-01').proxy.domain_forward, true)
+    bindVmProxy(root, 'vm-01', { ...SOCKS, domain_forward: false })
+    assert.equal(getVm(root, 'vm-01').proxy.domain_forward, false)
+    assert.equal(getVm(root, 'vm-01').schedulable, false)
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('patchVmRecord after bind keeps proxy_cli_enabled', () => {
   const root = tmpRoot()
   try {

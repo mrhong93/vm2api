@@ -41,6 +41,47 @@ function fakeDocker(onJob) {
   }
 }
 
+test('authorization survives resource cleanup failure; browser errors keep their original code', async () => {
+  for (const browserFails of [false, true]) {
+    let released = false
+    const mock = fakeDocker((_job, child) =>
+      queueMicrotask(() => {
+        child.stdout.write(
+          JSON.stringify(
+            browserFails
+              ? { event: 'stage', stage: 'failed', code: 'browser_closed' }
+              : { event: 'callback', callback_url: 'http://localhost:1455/auth/callback?code=fixture' },
+          ) + '\n',
+        )
+        child.emit('close', browserFails ? 1 : 0)
+      }),
+    )
+    const promise = runMailboxSlotProcess(
+      {
+        projectRoot: process.cwd(),
+        vm: { id: 'vm-01' },
+        action: 'login',
+        payload: { native: true },
+        ...mock,
+      },
+      {
+        acquire: async () => async () => {
+          released = true
+          throw Object.assign(new Error('private Docker diagnostic'), { code: 'browser_resources_failed' })
+        },
+      },
+    )
+    if (browserFails) await assert.rejects(promise, { code: 'browser_closed' })
+    else {
+      const result = await promise
+      assert.match(result.callback, /code=fixture/)
+      assert.equal(result.native, true)
+      assert.equal(result.resource_cleanup_error_code, 'browser_resources_failed')
+    }
+    assert.equal(released, true)
+  }
+})
+
 test('registration checkpoint is acknowledged only after durable handling, and its result stays internal', async () => {
   for (const fail of [false, true]) {
     const checkpoints = []
@@ -225,14 +266,14 @@ test('browser failure details are not returned to callers', async () => {
   )
 })
 
-test('browser resource gate checks the live Docker limit and accepts an explicit online raise', async () => {
+test('network admission allows low-memory Docker slots to acquire a temporary browser budget', async () => {
   const vm = { id: 'vm-02', proxy: { id: 'resource-fixture', scheme: 'local' } }
   let memory = 512 * 1024 ** 2
   const inspect = async () => ({
     State: { Running: true },
     HostConfig: { NetworkMode: 'kin-eg-resource-fixture', Memory: memory },
   })
-  await assert.rejects(assertMailboxSlotNetwork(vm, { inspect }), { code: 'browser_memory_insufficient' })
+  await assertMailboxSlotNetwork(vm, { inspect })
   memory = 1024 ** 3
   await assertMailboxSlotNetwork(vm, { inspect })
   memory = 0 // Docker's unlimited setting is not a zero-memory slot.

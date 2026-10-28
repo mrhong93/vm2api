@@ -452,6 +452,74 @@ for (const reason of ['no_credential', 'oauth_invalid_grant', 'credential_refres
   }
 }
 
+test('successful native authorization commits before uninstall and keeps the slot resting', async (t) => {
+  const sequence = []
+  const h = harness(t, {
+    runSlot: async ({ action, payload }) => {
+      if (action === 'prepare') return { ok: true }
+      assert.equal(payload.native, true)
+      return { callback: 'http://localhost:1455/auth/callback?code=mock&state=test-state', native: true }
+    },
+    commit: async () => sequence.push('commit'),
+    manageRuntime: async ({ action }) => {
+      sequence.push(action)
+      return { installed: false }
+    },
+  })
+  h.vm.schedulable = false
+  h.service.start('vm-01')
+  await h.service.settle()
+  assert.deepEqual(sequence, ['commit', 'uninstall'])
+  assert.equal(h.service.status('vm-01').state.status, 'succeeded')
+  assert.equal(h.store.summary('vm-01').configured, true)
+  assert.equal(h.vm.schedulable, false)
+})
+
+test('uninstall failure cannot erase successful native authorization', async (t) => {
+  const h = harness(t, {
+    runSlot: async ({ action }) =>
+      action === 'prepare'
+        ? { ok: true }
+        : {
+            callback: 'http://localhost:1455/auth/callback?code=mock&state=test-state',
+            native: true,
+          },
+    manageRuntime: async () => {
+      throw mailboxError('browser_uninstall_failed', 502)
+    },
+  })
+  h.service.start('vm-01')
+  await h.service.settle()
+  const state = h.service.status('vm-01').state
+  assert.equal(state.status, 'succeeded')
+  assert.equal(state.error_code, null)
+  assert.equal(state.cleanup_error_code, 'browser_uninstall_failed')
+  assert.equal(h.store.summary('vm-01').configured, true)
+})
+
+test('resource cleanup warning commits authorization and defers uninstalling a possibly live browser', async (t) => {
+  const h = harness(t, {
+    runSlot: async ({ action }) =>
+      action === 'prepare'
+        ? { ok: true }
+        : {
+            callback: 'http://localhost:1455/auth/callback?code=mock&state=test-state',
+            native: true,
+            resource_cleanup_error_code: 'browser_resources_failed',
+          },
+    manageRuntime: async () => {
+      throw new Error('must not uninstall before resource cleanup completes')
+    },
+  })
+  h.service.start('vm-01')
+  await h.service.settle()
+  assert.ok(h.calls.includes('commit'))
+  const state = h.service.status('vm-01').state
+  assert.equal(state.status, 'succeeded')
+  assert.equal(state.error_code, null)
+  assert.equal(state.cleanup_error_code, 'browser_resources_failed')
+})
+
 test('soft-paused slot supports manual browser maintenance; stopped runtime is still rejected', async (t) => {
   const h = harness(t, { manageRuntime: async () => ({ installed: true }) })
   h.vm.status = 'paused'

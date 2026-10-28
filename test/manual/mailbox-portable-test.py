@@ -1,6 +1,6 @@
-"""Offline r4 integration in a disposable, read-only, capless Docker slot.
+"""Offline r5 integration in a disposable, read-only, capless Docker slot.
 
-Requires a matching Ubuntu/Debian image with python3, and an r4 bundle.
+Requires a matching Ubuntu/Debian image with python3, and an r5 bundle.
 No account, external network, existing slot or profile is used.
 """
 import argparse
@@ -72,7 +72,7 @@ def main():
     try:
         docker('run', '-d', '--name', name, '--network', 'none', '--read-only',
                '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges', '--user', '10005:987',
-               '--memory', '1g', '--memory-swap', '1g', '--tmpfs', '/tmp:rw,nosuid,nodev,size=256m',
+               '--memory', '1536m', '--memory-swap', '1536m', '--tmpfs', '/tmp:rw,nosuid,nodev,size=256m',
                '-v', str(home) + ':/home/kincli', '-v', str(scripts) + ':/fixture-source:ro',
                '--entrypoint', 'sleep', args.image, 'infinity')
         denied = subprocess.run(['docker', 'exec', '-u', '0', name, 'ls', '/home/kincli'], capture_output=True)
@@ -81,7 +81,7 @@ def main():
         assert facts['supported'] and not facts['installed'], facts
         info = operation('install', bundle)['data']
         assert info['verified'] and info['graphical'] and not info['needs_upgrade'], info
-        assert info['revision'] == 4 and info['version'] == '1.64.1', info
+        assert info['revision'] == 5 and info['native_input'] and info['version'] == '1.64.1', info
         print('PASS fresh installation: temporary-path graphical launch, screenshot and click', flush=True)
         display_binary = runtime / 'display/bin/Xvfb'
         original_mode = display_binary.stat().st_mode & 0o777
@@ -155,7 +155,7 @@ flow.run()
                 entry.type = tarfile.DIRTYPE
                 entry.mode = 0o755
                 archive.addfile(entry)
-            metadata = {**facts, 'version': '1.64.1', 'revision': 4}
+            metadata = {**facts, 'version': '1.64.1', 'revision': 5, 'native_input': True}
             for item, content in [('portable.json', json.dumps(metadata)), ('display/runtime.py', '# fixture')]:
                 entry = tarfile.TarInfo(item)
                 data = content.encode()

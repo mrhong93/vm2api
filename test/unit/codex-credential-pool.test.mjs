@@ -174,8 +174,11 @@ test('binding to a resting slot does not login, refresh, probe or activate sched
   assert.equal(h.slots[0].schedulable, false)
   assert.equal(h.service.status('vm-01').email, email)
   assert.equal(h.service.status('vm-01').login_armed, false)
-  assert.throws(() => h.service.remote('vm-01'), /slot_resting/)
   assert.throws(() => h.service.control('vm-01', { op: 'frame' }), /slot_resting/)
+  // Explicit native remote access is allowed without enabling scheduling.
+  h.service.remote('vm-01')
+  await h.service.settle()
+  assert.equal(h.slots[0].schedulable, false)
   h.service.start('vm-01')
   await h.service.settle()
   assert.equal(h.service.status('vm-01').state.status, 'succeeded')

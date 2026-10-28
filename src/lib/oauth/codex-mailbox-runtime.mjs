@@ -8,6 +8,8 @@ import { inspectContainerOrNull } from '../cluster/docker-remote.mjs'
 import { slotNetworkForVm } from '../vm/egress.mjs'
 import { isKvmRuntime } from '../vm/runtime-kind.mjs'
 import { mailboxError } from './codex-mailbox-store.mjs'
+import { manageMailboxBrowserRuntime } from './mailbox-browser-environment.mjs'
+import { acquireBrowserResources } from './mailbox-browser-resources.mjs'
 
 export const PLAYWRIGHT_VERSION = '1.64.1'
 export const MAILBOX_BOOTSTRAP = `set -eu
@@ -81,6 +83,15 @@ def controls():
 threading.Thread(target=controls,daemon=True).start()
 signal.signal(signal.SIGTERM,lambda *_:stop())
 rc=child.wait()
+try:os.killpg(child.pid,signal.SIGTERM)
+except ProcessLookupError:pass
+deadline=time.monotonic()+5
+while time.monotonic()<deadline:
+ try:os.killpg(child.pid,0)
+ except ProcessLookupError:break
+ time.sleep(.05)
+try:os.killpg(child.pid,signal.SIGKILL)
+except ProcessLookupError:pass
 if job['action']=='prepare':reader.join(timeout=2)
 if job['action']=='prepare':print(json.dumps({'event':'prepared','ok':rc==0}),flush=True)
 sys.exit(130 if cancelled.is_set() else (0 if rc==0 else 1))
@@ -165,11 +176,41 @@ export async function assertMailboxSlotNetwork(vm, { inspect = inspectContainerO
   if (!container?.State?.Running || container.State.Paused) throw mailboxError('slot_not_running', 409)
   const expected = slotNetworkForVm(vm)
   if (!expected || container.HostConfig?.NetworkMode !== expected) throw mailboxError('slot_egress_mismatch', 409)
-  const limit = Number(container.HostConfig?.Memory || 0)
-  if (!isKvmRuntime(vm) && limit > 0 && limit < 1024 ** 3) throw mailboxError('browser_memory_insufficient', 409)
+  // The runtime lease raises a finite Docker memory budget before execution.
+  // Network admission must also allow smaller slots to acquire that budget.
 }
 
-export function runMailboxSlotProcess({
+export async function runMailboxSlotProcess(
+  options,
+  { acquire = acquireBrowserResources, manageRuntime = manageMailboxBrowserRuntime } = {},
+) {
+  // Test adapters provide their own supervisor; resource changes always target
+  // the real slot daemon and must never run for an injected child process.
+  if (options.spawnImpl && acquire === acquireBrowserResources) return runMailboxProcess(options)
+  const release = await acquire(options)
+  let result, failure
+  try {
+    if (options.action === 'prepare') {
+      const info = await manageRuntime({ ...options, action: 'status' })
+      if (!info.installed || info.needs_upgrade) await manageRuntime({ ...options, action: 'install' })
+    }
+    result = await runMailboxProcess(options)
+  } catch (error) {
+    failure = error
+  }
+  try {
+    await release()
+  } catch (error) {
+    // An authorization code is single-use and short-lived. Preserve it so the
+    // service can commit credentials before reporting a separate cleanup issue.
+    if (result?.callback) return { ...result, resource_cleanup_error_code: 'browser_resources_failed' }
+    failure ||= error
+  }
+  if (failure) throw failure
+  return result
+}
+
+function runMailboxProcess({
   projectRoot,
   vm,
   action,
@@ -190,7 +231,14 @@ export function runMailboxSlotProcess({
       ? { action, bootstrap: MAILBOX_BOOTSTRAP }
       : {
           action,
-          runner: fs.readFileSync(path.join(projectRoot, 'scripts', 'codex-mailbox-browser.py'), 'utf8'),
+          runner: fs.readFileSync(
+            path.join(
+              projectRoot,
+              'scripts',
+              payload?.native ? 'mailbox-native-browser.py' : 'codex-mailbox-browser.py',
+            ),
+            'utf8',
+          ),
           payload: {
             ...payload,
             // Slot configuration wins over request bodies and the control-plane
@@ -235,7 +283,7 @@ export function runMailboxSlotProcess({
     child.stderr.on('data', () => {}) // Never log browser URLs, passwords or tokens.
     child.stdout.on('data', (chunk) => {
       buffer += chunk.toString('utf8')
-      if (buffer.length > 3_000_000) {
+      if (buffer.length > 8_000_000) {
         errorCode = 'invalid_browser_output'
         abort()
         buffer = ''
@@ -292,7 +340,9 @@ export function runMailboxSlotProcess({
       if (errorCode) return complete(mailboxError(errorCode, 502))
       if (['session', 'subscription', 'register'].includes(action))
         return result ? complete(null, result) : complete(mailboxError('browser_result_missing', 502))
-      callback ? complete(null, { callback }) : complete(mailboxError('oauth_callback_missing', 502))
+      callback
+        ? complete(null, { callback, native: payload?.native === true })
+        : complete(mailboxError('oauth_callback_missing', 502))
     })
     send(job)
     if (signal?.aborted) abort()

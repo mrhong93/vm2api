@@ -548,6 +548,16 @@ export function configuredDnsEmptyTypes() {
   return new SettingsRepo(getDb()).get('proxy_pool_config')?.dns_disable_svcb_https === true ? [64, 65] : []
 }
 
+/** The pool is authoritative; older slot snapshots can omit or retain an old flag. */
+export function configuredDomainForward(proxy) {
+  if (isDbOpen() && proxy?.id) {
+    const row = getDb().prepare('SELECT domain_forward FROM proxies WHERE id = ?').get(proxy.id)
+    if (row) return row.domain_forward === 1
+  }
+  // Cluster guests and standalone callers may have no local pool database.
+  return proxy?.domain_forward === true
+}
+
 const EGRESS_POLL_MS = 50
 const egressWaitLock = new Int32Array(new SharedArrayBuffer(4))
 
@@ -964,7 +974,7 @@ export async function startProxyEgress(
     listenHost,
     dnsUpstream,
     dnsEmptyTypes,
-    domainForward: proxy?.domain_forward === true,
+    domainForward: configuredDomainForward(proxy),
     ...(bin ? { bin } : {}),
   })
   if (!started.ok) return started

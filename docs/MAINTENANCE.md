@@ -2,7 +2,7 @@
 
 本仓库为 `zhang2580384/vm2api`，首个独立发行版为 **v2.0.0**，上游基线为 `dofastted/vm2api` 的 **v1.3.226**（`7cd52501c03c03e36493c38e39edc349de7d0c99`）。保留上游版权及 LICENSE。
 
-当前发行版 **v2.4.0** 选择性同步上游 **v1.4.006**（`07edb2cdc0576da1ea9a64bc2d27c00fb4c15aff`），通过 merge 保留双方提交历史。Claude 协议及匹配 payload 保留 v2.0.2 / v1.3.226 兼容实现，不表示与上游完整等价；暂缓项目及验收条件见 [同步记录](UPSTREAM_SYNC_1.4.006.md)。首次独立版本的来源记录保持不变。
+当前发行版 **v2.4.1** 选择性同步上游 **v1.4.006**（`07edb2cdc0576da1ea9a64bc2d27c00fb4c15aff`），通过 merge 保留双方提交历史。Claude 协议及匹配 payload 保留 v2.0.2 / v1.3.226 兼容实现，不表示与上游完整等价；暂缓项目及验收条件见 [同步记录](UPSTREAM_SYNC_1.4.006.md)。首次独立版本的来源记录保持不变。
 
 ## 维护和发布规则
 
@@ -12,6 +12,7 @@
 - 发布时同步 `VERSION`、`CHANGELOG.md`、`.env.example` 默认镜像标签、`docs/releases/vX.Y.Z.md`，以及版本接口中的上游基线（基线改变时）。Git 标签必须是 `v` 加 VERSION。
 - 先合并通过 CI 的 PR，再创建发布标签。release 工作流重新执行验证；二进制附件和镜像全部成功后才公开 Release。不要移动已发布标签；发布错误用下一个补丁版本纠正。
 - 发布会生成 `ghcr.io/zhang2580384/vm2api:vX.Y.Z` 多架构镜像，并生成 amd64/arm64 标签。生产优先固定版本或摘要，不跟随 `edge`。
+- 本仓库的 Releases、镜像及面板更新源是本维护分支的正式发行渠道。欢迎 PR 回流；修改与再分发遵循现有 LICENSE，保留上游及贡献者署名，并明确标注发行来源及改动，不将第三方改版标作本仓库正式版。
 - 控制面“检查更新”、升级脚本、前端仓库入口及默认镜像均指向本仓库。槽位 OS 镜像保持兼容的上游来源；CLI/kernel payload 独立固定在 `deploy/payload.json`，带尺寸和 SHA-256 校验，不能全局替换仓库地址。
 - 发布产物成功不等于生产验收。生产部署另行安排，保留原镜像摘要、Compose、override 及数据备份；分别检查本地健康、公共 HTTPS、账号池和实际业务。禁止把服务器 `.env`、账号、数据库或浏览器 profiles 提交到仓库。
 
@@ -45,11 +46,11 @@ fixture@example.com----gpt-fixture-password----JBSWY3DPEHPK3PXP
 
 ### 浏览器运行时前提
 
-“导入/保存/绑定”不依赖浏览器；实际登录需要 Playwright 1.64.1、Chromium 和图形显示组件。原贡献中的浏览器运行包不在 Git 内，**本版控制面镜像也不附带该大型运行包**。通过槽位详情的安装/升级按钮构建匹配发行版、架构和 Python ABI 的 r4 portable 包，支持只读根目录槽位。缺失时明确提示安装或升级，不关闭只读限制或重建槽位。
+“导入/保存/绑定”不依赖浏览器。v2.4.1 的显式登录使用原生 Chromium 与 X11 远程操作；自动注册和后台自动重登仍依赖 Playwright 1.64.1。原贡献中的浏览器运行包不在 Git 内，**本版控制面镜像也不附带该大型运行包**。登录时按需准备，或通过槽位详情安装/升级按钮构建匹配发行版、架构和 Python ABI 的 r5 portable 包，支持只读根目录槽位，不关闭只读限制或重建槽位。
 
 提供的 `scripts/build-mailbox-portable.py` 在目标匹配的 Ubuntu / Debian 构建容器中执行：预装 `/opt/kin-mailbox/venv`、Playwright 1.64.1、`/opt/kin-mailbox/browsers` 的 Chromium 及系统依赖后，以 root 执行并将标准输出保存为 tar.gz。直接执行时需保留同目录的 `mailbox-display.py`。图形组件使用发行版官方源码构建；源码不包含账号或 profile。
 
-面板管理的包缓存于 `share/kin-mailbox-runtime/managed/<系统>-<版本>-<架构>-py<Python版本>-1.64.1-r4.tar.gz`，同名 `.json` 记录系统信息、版本和真实 `sha256`。包将校验后放入槽位原有可写 home，保留 profiles。旧手工缓存与 r3 缓存不会代替 r4 包。不要把 Ubuntu 包部署到 Debian 槽位；支持矩阵与实测边界见 [浏览器环境文档](BROWSER_ENVIRONMENT.md)。
+面板管理的包缓存于 `share/kin-mailbox-runtime/managed/<系统>-<版本>-<架构>-py<Python版本>-1.64.1-r5.tar.gz`，同名 `.json` 记录系统信息、版本和真实 `sha256`。包将校验后放入槽位原有可写 home，保留 profiles。旧手工缓存与 r3/r4 缓存不会代替 r5 包。不要把 Ubuntu 包部署到 Debian 槽位；支持矩阵与实测边界见 [浏览器环境文档](BROWSER_ENVIRONMENT.md)。
 
 ## 首次从官方版本切换
 

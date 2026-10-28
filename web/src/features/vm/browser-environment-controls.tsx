@@ -14,6 +14,7 @@ export type BrowserEnvironment = {
   version?: string | null
   revision?: number | null
   graphical?: boolean
+  native_input?: boolean
   needs_upgrade?: boolean
   running: boolean
   stage?: string
@@ -97,14 +98,15 @@ export function BrowserEnvironmentControls({
                 ? loginLabel(info.stage || '')
                 : info?.installed
                   ? info.needs_upgrade
-                    ? '已安装，需升级图形环境'
+                    ? '已安装，需升级原生操控环境'
                     : info.graphical
-                      ? '已安装 · 图形模式'
+                      ? info.native_input
+                        ? '已安装 · 原生人工授权'
+                        : '已安装 · 图形模式'
                       : '已安装'
                   : info
                     ? '未安装'
                     : '检测失败'}
-          {info?.installed && info.version && ` · Playwright ${info.version}`}
           {info?.installed &&
             typeof info.revision === 'number' &&
             ` · r${info.revision}`}
@@ -113,7 +115,7 @@ export function BrowserEnvironmentControls({
         </p>
         {info?.needs_upgrade && (
           <p className='text-amber-600'>
-            更新主程序后，旧槽位仍需点击“升级浏览器环境”安装图形运行包；会话资料会保留。
+            点击登录时会自动准备原生操控环境，也可手动升级；会话资料会保留。
           </p>
         )}
         {info?.supported === false && (
@@ -130,7 +132,9 @@ export function BrowserEnvironmentControls({
         {info?.stage === 'browser_runtime_installed' && !info.error_code && (
           <p>浏览器启动检查已通过，未执行账号登录。</p>
         )}
-        <p>安装仅准备运行环境，不执行登录；卸载保留凭据和浏览器会话资料。</p>
+        <p>
+          登录时按需安装，人工授权成功后自动卸载运行环境；凭据和浏览器会话资料保留。全局同时只运行一个浏览器任务。
+        </p>
       </div>
     </>
   )

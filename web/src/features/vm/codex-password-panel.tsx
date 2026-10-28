@@ -34,12 +34,18 @@ export type LoginStatus = {
     checked_at: string
     period_end: string
   } | null
-  browser: { active: boolean; ready: boolean; remote: boolean }
+  browser: {
+    active: boolean
+    ready: boolean
+    remote: boolean
+    native?: boolean
+  }
   state: {
     running: boolean
     status: string
     stage: string
     error_code?: string
+    cleanup_error_code?: string | null
     job_id?: string
   }
 }
@@ -72,12 +78,17 @@ export function CodexPasswordPanel({ vm }: { vm: Vm }) {
   }, [status.data?.credential_id, qc])
   useEffect(() => {
     const signature =
-      status.data?.state.status === 'succeeded' ? status.data.state.job_id : ''
+      status.data?.state.status === 'succeeded' &&
+      status.data.state.stage === 'completed' &&
+      !status.data.browser.active
+        ? status.data.state.job_id
+        : ''
     if (!signature || notified.current === signature) return
     notified.current = signature
     void qc.invalidateQueries({ queryKey: dashboardQueryOptions().queryKey })
     void qc.invalidateQueries({ queryKey: vmQueryOptions(vm.id).queryKey })
     void qc.invalidateQueries({ queryKey: ['login-credentials'] })
+    void qc.invalidateQueries({ queryKey: ['browser-environment', vm.id] })
   }, [status.data, qc, vm.id])
   async function perform(action: string) {
     setBusy(true)
@@ -96,6 +107,10 @@ export function CodexPasswordPanel({ vm }: { vm: Vm }) {
               ),
       })
       setCode('')
+      if (action === 'start')
+        window.dispatchEvent(
+          new CustomEvent('codex-open-browser', { detail: vm.id })
+        )
       await Promise.all([status.refetch(), pool.refetch()])
       toast.success(
         action === 'bind'
@@ -240,6 +255,14 @@ export function CodexPasswordPanel({ vm }: { vm: Vm }) {
           {status.data.state.error_code && (
             <p className='text-amber-600'>
               {loginLabel(status.data.state.error_code)}
+            </p>
+          )}
+          {status.data.state.cleanup_error_code && (
+            <p className='text-amber-600'>
+              {status.data.state.cleanup_error_code ===
+              'browser_resources_failed'
+                ? '授权已保存；临时资源恢复失败，已保留浏览器环境，请检查槽位资源状态。'
+                : '授权已保存；浏览器环境自动卸载失败，可稍后手动卸载。'}
             </p>
           )}
         </div>

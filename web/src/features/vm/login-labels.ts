@@ -74,6 +74,15 @@ const labels: Record<string, string> = {
   cancelled: '已取消',
   skipped_existing: '已存在，跳过',
   manual_control: '已由人工接管',
+  native_manual_login: '原生浏览器已就绪，请在远程屏幕手动登录授权',
+  browser_native_failed:
+    '原生浏览器启动或远程桌面连接失败，请重新安装运行环境后重试',
+  browser_native_input_unavailable: '原生鼠标键盘组件不可用，请升级浏览器环境',
+  browser_native_operation_unavailable:
+    '此操作需先关闭原生浏览器窗口，再单独执行',
+  browser_resources_busy: '上一个浏览器仍在退出，请稍后重试',
+  browser_resources_failed: '临时调整浏览器资源失败，请检查槽位资源配置',
+  oauth_callback_unavailable: '槽内授权回调端口不可用，请先关闭遗留登录任务',
   captcha_required: '需要人工验证，请打开远程屏幕处理',
   remote_ready: '远程浏览器已就绪',
   insufficient_enabled_empty_slots:

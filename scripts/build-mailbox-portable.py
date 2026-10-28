@@ -143,8 +143,8 @@ with tempfile.TemporaryDirectory(prefix='mailbox-bundle-') as temp:
                     queue.append(p)
     queue.append(root / f'venv/lib/python{python_version}/site-packages/playwright/driver/node')
     collect_libraries(queue, libs)
-    (root / 'portable.json').write_text(json.dumps({'version': '1.64.1', 'revision': 4,
-        'graphical': True,
+    (root / 'portable.json').write_text(json.dumps({'version': '1.64.1', 'revision': 5,
+        'graphical': True, 'native_input': True,
         'os': release['ID'], 'os_version': release['VERSION_ID'],
         'arch': architecture, 'python': python_version}))
     (root / 'ready-1.64.1').touch()
