@@ -39,7 +39,7 @@ export PLAYWRIGHT_BROWSERS_PATH=/opt/kin-mailbox/browsers
  apt-get update -qq
  apt-get install -y --no-install-recommends python3 python3-venv ca-certificates
  python3 -m venv /opt/kin-mailbox/venv
- /opt/kin-mailbox/venv/bin/python -m pip install --disable-pip-version-check playwright==${VERSION}
+ /opt/kin-mailbox/venv/bin/python -m pip install --disable-pip-version-check playwright==${VERSION} python-xlib==0.33
  /opt/kin-mailbox/venv/bin/python -m playwright install --with-deps chromium
 ) >&2
 exec /opt/kin-mailbox/venv/bin/python -c ${quote(`DISPLAY_HELPER_SOURCE = ${JSON.stringify(displayHelper)}\n${packer}`)}
@@ -167,7 +167,7 @@ export async function manageMailboxBrowserRuntime({
   const target = browserRuntimeTarget(await slot('status'))
   const cache = path.join(projectRoot, 'share/kin-mailbox-runtime/managed')
   fs.mkdirSync(cache, { recursive: true, mode: 0o700 })
-  const key = `${target.os}-${target.os_version}-${target.arch}-py${target.python}-${VERSION}-r4`
+  const key = `${target.os}-${target.os_version}-${target.arch}-py${target.python}-${VERSION}-r5`
   const archive = path.join(cache, key + '.tar.gz')
   const manifest = path.join(cache, key + '.json')
   let valid = false
@@ -191,6 +191,12 @@ export async function manageMailboxBrowserRuntime({
           name,
           '--platform',
           `linux/${target.arch}`,
+          '--cpus',
+          '1',
+          '--memory',
+          '1536m',
+          '--memory-swap',
+          '1536m',
           '-i',
           `${target.os}:${target.os_version}`,
           'sh',

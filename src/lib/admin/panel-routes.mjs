@@ -5733,6 +5733,16 @@ export function createPanelHandler(ctx) {
         // Same-id connection change: network name is unchanged so reload would
         // only docker restart — the helper must pick up the new proxy_url or
         // transparent traffic keeps the old exit.
+        // Slot start/recovery also reads its saved binding. Keep the preference
+        // there without changing credentials or reloading the slot worker.
+        if (!result.connection_changed && Object.hasOwn(patch, 'domain_forward')) {
+          for (const vmId of result.proxy.bound_vm_ids || []) {
+            patchVmRecord(cfg.paths.project, vmId, (vm) => {
+              if (vm.proxy?.id !== id) return {}
+              return { proxy: { ...vm.proxy, domain_forward: result.proxy.domain_forward === true } }
+            })
+          }
+        }
         let egress = null
         if (
           (result.domain_forward_changed || result.connection_changed || Object.hasOwn(patch, 'domain_forward')) &&

@@ -10,6 +10,7 @@ import { type LoginStatus, loginLabel } from './codex-password-panel'
 
 type Frame = {
   image: string
+  mime?: 'image/png' | 'image/jpeg'
   width: number
   height: number
   active: number
@@ -152,7 +153,10 @@ export function CodexBrowserPanel({ vm }: { vm: Vm }) {
       setBusy(false)
     }
   }
-  const manual = status.data?.browser.remote || frame.data?.paused
+  const manual =
+    status.data?.browser.native ||
+    status.data?.browser.remote ||
+    frame.data?.paused
   const usable = enabled && manual
   return (
     <div className='space-y-2 border-t pt-3'>
@@ -160,9 +164,7 @@ export function CodexBrowserPanel({ vm }: { vm: Vm }) {
         <Button
           size='sm'
           variant='outline'
-          disabled={
-            busy || (vm.schedulable === false && !status.data?.browser.active)
-          }
+          disabled={busy || vm.runtime?.stopped === true}
           onClick={() => void start()}
         >
           {open ? '连接远程屏幕' : '打开远程浏览器'}
@@ -179,7 +181,7 @@ export function CodexBrowserPanel({ vm }: { vm: Vm }) {
         )}
       </div>
       <p className='text-xs text-muted-foreground'>
-        可直接打开远程浏览器手动操作；自动任务遇到验证码时，也可接管屏幕。
+        手动登录使用槽内原生浏览器，鼠标键盘通过独立远程桌面传递。授权成功后自动卸载运行环境，保留凭据和会话资料。
       </p>
       {open && (
         <>
@@ -189,7 +191,7 @@ export function CodexBrowserPanel({ vm }: { vm: Vm }) {
               ` · ${loginLabel(status.data.state.error_code)}`}
           </p>
           <div className='flex flex-wrap gap-2'>
-            {!status.data?.browser.remote && (
+            {!status.data?.browser.remote && !status.data?.browser.native && (
               <Button
                 size='sm'
                 variant='outline'
@@ -292,7 +294,7 @@ export function CodexBrowserPanel({ vm }: { vm: Vm }) {
               >
                 <img
                   alt='槽位浏览器实时屏幕'
-                  src={`data:image/jpeg;base64,${frame.data.image}`}
+                  src={`data:${frame.data.mime === 'image/png' ? 'image/png' : 'image/jpeg'};base64,${frame.data.image}`}
                   className='w-full select-none'
                   draggable={false}
                   onClick={(event) => {

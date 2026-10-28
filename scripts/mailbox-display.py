@@ -3,6 +3,7 @@ import contextlib
 import os
 from pathlib import Path
 import select
+import socket
 import struct
 import subprocess
 import tempfile
@@ -31,8 +32,13 @@ def slot_browser_display(runtime):
         cookie = os.urandom(16)
 
         def write_authority(number):
-            fields = [b'', str(number).encode(), b'MIT-MAGIC-COOKIE-1', cookie]
-            authority.write_bytes(struct.pack('!H', 65535) + b''.join(struct.pack('!H', len(v)) + v for v in fields))
+            # python-xlib matches FamilyLocal exactly; libX11 also accepts the
+            # wildcard entry. Both clients use the same private display cookie.
+            entries = []
+            for family, host in [(256, socket.gethostname().encode()), (65535, b'')]:
+                fields = [host, str(number).encode(), b'MIT-MAGIC-COOKIE-1', cookie]
+                entries.append(struct.pack('!H', family) + b''.join(struct.pack('!H', len(v)) + v for v in fields))
+            authority.write_bytes(b''.join(entries))
             authority.chmod(0o600)
 
         write_authority('')

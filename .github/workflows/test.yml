@@ -63,7 +63,7 @@ jobs:
           node scripts/fetch-payload.mjs --check
       - run: npm run test:unit
       - name: offline backup and cloud restore end-to-end
-        run: node --test test/e2e/backup.e2e.test.mjs
+        run: node --test test/e2e/backup.e2e.test.mjs test/e2e/panel-proxy-domain-forward.e2e.test.mjs
       - name: go vet and test
         run: |
           (cd worker && go vet ./... && go test ./...)
@@ -74,6 +74,7 @@ jobs:
       - name: offline account-login browser fixtures
         run: |
           python test/mailbox-display-test.py
+          python test/mailbox-native-browser-test.py
           python test/quality-state-probe-test.py
           python -m pip install playwright==1.64.1
           python -m playwright install --with-deps chromium

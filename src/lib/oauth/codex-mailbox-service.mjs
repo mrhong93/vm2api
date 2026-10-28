@@ -116,6 +116,7 @@ export function createCodexMailboxService({
         active: jobs.has(id) && !jobs.get(id)?.maintenance,
         ready: !!jobs.get(id)?.send,
         remote: jobs.get(id)?.remote === true,
+        native: jobs.get(id)?.native === true,
       },
       state: state || { running: false, status: 'idle', stage: 'idle' },
     }
@@ -206,6 +207,7 @@ export function createCodexMailboxService({
           totp_secret: login.totp_secret,
           auth_url: auth.auth_url,
           state,
+          native: entry.native === true,
         },
         onStage: (stage) => update(id, { stage }),
         onControl: (send) => {
@@ -213,6 +215,7 @@ export function createCodexMailboxService({
         },
         onEvent: (event) => receive(entry, event),
       })
+      entry.send = null
       vm = stillAllowed(id, login.revision, controller.signal)
       const callback = new URL(response.callback)
       if (
@@ -233,6 +236,7 @@ export function createCodexMailboxService({
         stage: 'completed',
         status: 'succeeded',
         error_code: null,
+        cleanup_error_code: response.resource_cleanup_error_code || null,
         last_success_at: new Date(now()).toISOString(),
         finished_at: new Date(now()).toISOString(),
         failures: 0,
@@ -242,6 +246,18 @@ export function createCodexMailboxService({
         await onAuthorized(id)
       } catch {
         /* Credential commit has already succeeded. */
+      }
+      if (response.native === true && !response.resource_cleanup_error_code) {
+        // Commit credentials before removing executables. A cleanup failure
+        // must not turn successful authorization into a reported login failure.
+        update(id, { stage: 'uninstalling_browser' })
+        try {
+          const info = await manageRuntime({ projectRoot, vm, action: 'uninstall' })
+          runtimeStates.set(id, { ...info, running: false, stage: 'browser_runtime_removed' })
+          update(id, { stage: 'completed', cleanup_error_code: null })
+        } catch {
+          update(id, { stage: 'completed', cleanup_error_code: 'browser_uninstall_failed' })
+        }
       }
     } catch (error) {
       const code = /^[a-z_]{1,60}$/.test(error.code || '') ? error.code : 'browser_login_failed'
@@ -286,6 +302,7 @@ export function createCodexMailboxService({
       pending: new Map(),
       revision: login.revision,
       automatic,
+      native: !automatic,
       allowResting: !automatic && current.schedulable === false,
     }
     jobs.set(id, entry)
@@ -343,6 +360,7 @@ export function createCodexMailboxService({
     }
     const entry = {
       registration: true,
+      native: false,
       allowResting: readSlot(id).schedulable === false,
       controller: new AbortController(),
       pending: new Map(),
@@ -441,6 +459,7 @@ export function createCodexMailboxService({
         // OAuth failure retains the confirmed credentials for a manual retry.
         store.bind(id, credentialId, credentialOwner)
         entry.revision = store.read(id).revision
+        entry.native = true
         update(id, { stage: 'registration_authorizing' })
         await execute(id, entry, store.read(id))
       } catch (error) {
@@ -538,13 +557,15 @@ export function createCodexMailboxService({
       jobSlot(id)
       return publicState(id)
     }
-    const vm = enabledSlot(id)
+    const vm = availableSlot(id)
     if (jobs.size) throw mailboxError('mailbox_login_busy', 409)
     const entry = {
       controller: new AbortController(),
       pending: new Map(),
       send: null,
       remote: true,
+      native: true,
+      allowResting: vm.schedulable === false,
       revision: store.read(id)?.revision,
     }
     jobs.set(id, entry)
@@ -553,7 +574,7 @@ export function createCodexMailboxService({
       try {
         await checkNetwork(vm)
         await runSlot({ projectRoot, vm, action: 'prepare', signal: entry.controller.signal })
-        const current = enabledSlot(id)
+        const current = jobSlot(id)
         if (entry.controller.signal.aborted) throw mailboxError('login_cancelled', 409)
         await checkNetwork(current)
         const email = store.read(id)?.email || accountFor(id).email || ''
@@ -562,7 +583,7 @@ export function createCodexMailboxService({
           vm: current,
           action: 'remote',
           signal: entry.controller.signal,
-          payload: { remote: true, email, profile_id: id },
+          payload: { remote: true, native: true, email, profile_id: id },
           onStage: (stage) => update(id, { stage }),
           onControl: (send) => {
             entry.send = send
