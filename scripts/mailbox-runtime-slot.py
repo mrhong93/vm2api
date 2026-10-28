@@ -52,10 +52,12 @@ def status():
         portable = {}
     managed = bool(portable and (ROOT / 'venv/bin/python').is_file())
     legacy = (LEGACY / ('ready-' + VERSION)).is_file() and (LEGACY / 'venv/bin/python').is_file()
-    graphical = managed and all((ROOT / name).is_file() for name in (
-        'display/bin/Xvfb', 'display/bin/xkbcomp', 'display/runtime.py'))
+    graphical = managed and (ROOT / 'display/runtime.py').is_file() and all(
+        (ROOT / name).is_file() and os.access(ROOT / name, os.X_OK)
+        for name in ('display/bin/Xvfb', 'display/bin/xkbcomp'))
     info.update(installed=managed or legacy, managed=managed, legacy=bool(legacy),
                 version=portable.get('version') if managed else VERSION if legacy else None,
+                revision=portable.get('revision') if managed else None,
                 graphical=graphical,
                 needs_upgrade=bool((legacy and not managed) or (managed and (
                     portable.get('revision', 0) < 4 or not graphical))))

@@ -1,15 +1,17 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { Vm, VmProxySnap } from '@/types/panel-vm'
 import {
   ArrowDown,
   ArrowDownWideNarrow,
   ArrowUp,
   ArrowUpNarrowWide,
+  Settings2,
   Search,
   X,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
+import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
 import {
   Select,
@@ -18,6 +20,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import { editableDomainProxies } from './proxy-bulk-edit'
+import { ProxyBulkEditDialog } from './proxy-bulk-edit-dialog'
 import type { ProxyHover } from './proxy-hover'
 import {
   PROXY_ROW_GRID,
@@ -58,6 +62,7 @@ const COLUMNS: { label: string; sort?: ProxySortKey }[] = [
 ]
 
 export function ProxyList({
+  canEditDomainForward = false,
   all,
   rows,
   vms,
@@ -80,6 +85,7 @@ export function ProxyList({
   pending,
   actions,
 }: {
+  canEditDomainForward?: boolean
   /** 已排序全集，用于筛选计数。 */
   all: VmProxySnap[]
   /** 筛选 + 搜索后的可见行。 */
@@ -107,6 +113,18 @@ export function ProxyList({
   actions: ProxyRowActions
 }) {
   const searchRef = useRef<HTMLInputElement>(null)
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [bulkTargets, setBulkTargets] = useState<VmProxySnap[] | null>(null)
+  const selectableRows = editableDomainProxies(rows)
+  const selectableIds = new Set(selectableRows.map((p) => p.id!))
+  const selected = editableDomainProxies(all).filter((p) =>
+    selectedIds.has(p.id!)
+  )
+  const visibleSelected = selectableRows.filter((p) =>
+    selectedIds.has(p.id!)
+  ).length
+  const allVisibleSelected =
+    selectableRows.length > 0 && visibleSelected === selectableRows.length
   const healthFilter = !SEAT_FILTERS.some((f) => f.key === filter)
   const narrowed = !!query || filter !== 'all' || !!regionText
 
@@ -147,8 +165,8 @@ export function ProxyList({
                 onQuery('')
               }
             }}
-            placeholder='筛选可用节点：地址、名称、槽位、国家或时区'
-            aria-label='筛选可用节点'
+            placeholder='搜索代理：地址、名称、槽位、国家或时区'
+            aria-label='搜索代理'
             className='h-8 ps-8 pe-8 text-sm'
           />
           <kbd className='pointer-events-none absolute top-1/2 right-2 hidden -translate-y-1/2 rounded border bg-muted px-1 font-mono text-[10px] text-muted-foreground sm:block'>
@@ -240,6 +258,58 @@ export function ProxyList({
         </div>
       </div>
 
+      {canEditDomainForward ? (
+        <div className='flex flex-wrap items-center gap-3 border-b px-4 py-2 text-xs'>
+          <label className='flex cursor-pointer items-center gap-2'>
+            <Checkbox
+              checked={
+                allVisibleSelected
+                  ? true
+                  : visibleSelected > 0
+                    ? 'indeterminate'
+                    : false
+              }
+              disabled={!selectableRows.length}
+              onCheckedChange={(checked) => {
+                setSelectedIds((previous) => {
+                  const next = new Set(previous)
+                  for (const proxy of selectableRows) {
+                    if (checked === true) next.add(proxy.id!)
+                    else next.delete(proxy.id!)
+                  }
+                  return next
+                })
+              }}
+            />
+            全选当前筛选结果（{selectableRows.length}）
+          </label>
+          <span className='text-muted-foreground'>
+            已选 {selected.length} 条
+            {selected.length > visibleSelected
+              ? `（含筛选外 ${selected.length - visibleSelected} 条）`
+              : ''}
+          </span>
+          <Button
+            size='sm'
+            variant='outline'
+            disabled={!selected.length}
+            onClick={() => setBulkTargets(selected)}
+          >
+            <Settings2 aria-hidden='true' />
+            批量编辑
+          </Button>
+          {selected.length > 0 ? (
+            <Button
+              size='sm'
+              variant='ghost'
+              onClick={() => setSelectedIds(new Set())}
+            >
+              清空选择
+            </Button>
+          ) : null}
+        </div>
+      ) : null}
+
       {rows.length ? (
         <>
           <div
@@ -256,7 +326,13 @@ export function ProxyList({
                   active={sortKey === c.sort}
                   dir={sortDir}
                   // 行首有展开箭头，表头文字对齐到名称上。
-                  className={c.sort === 'host' ? 'ms-[18px]' : undefined}
+                  className={
+                    c.sort === 'host'
+                      ? canEditDomainForward
+                        ? 'ms-10'
+                        : 'ms-[18px]'
+                      : undefined
+                  }
                   onClick={() => onSort(c.sort as ProxySortKey)}
                 />
               ) : (
@@ -282,6 +358,21 @@ export function ProxyList({
                 dragVm={dragVm}
                 pending={pending}
                 actions={actions}
+                selection={
+                  canEditDomainForward && selectableIds.has(p.id!)
+                    ? {
+                        checked: selectedIds.has(p.id!),
+                        onChange: (checked) => {
+                          setSelectedIds((previous) => {
+                            const next = new Set(previous)
+                            if (checked) next.add(p.id!)
+                            else next.delete(p.id!)
+                            return next
+                          })
+                        },
+                      }
+                    : undefined
+                }
               />
             ))}
           </ul>
@@ -291,7 +382,7 @@ export function ProxyList({
           <p className='text-sm text-muted-foreground'>
             {all.length
               ? query
-                ? '没有匹配的可用节点（已满、禁用或失效的不参与筛选）。'
+                ? '没有匹配的代理。'
                 : '没有符合条件的代理。'
               : '还没有代理。点右上角「添加代理」粘贴 SOCKS5 行导入，或添加本地代理。'}
           </p>
@@ -317,6 +408,12 @@ export function ProxyList({
           : `显示 ${rows.length} / ${all.length} 条`}
         。账密不在列表里回显，「复制」按需取回并直接写入剪贴板。
       </p>
+      {bulkTargets ? (
+        <ProxyBulkEditDialog
+          proxies={bulkTargets}
+          onClose={() => setBulkTargets(null)}
+        />
+      ) : null}
     </section>
   )
 }

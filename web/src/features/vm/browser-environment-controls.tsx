@@ -11,6 +11,8 @@ export type BrowserEnvironment = {
   os_version?: string
   supported?: boolean
   installed?: boolean
+  version?: string | null
+  revision?: number | null
   graphical?: boolean
   needs_upgrade?: boolean
   running: boolean
@@ -31,7 +33,7 @@ export function BrowserEnvironmentControls({
   const [submitting, setSubmitting] = useState(false)
   const enabled = ['running', 'ok'].includes(vm.status || '')
   const query = useQuery({
-    queryKey: ['browser-environment', vm.id],
+    queryKey: ['browser-environment', vm.id, endpoint],
     queryFn: () => api<BrowserEnvironment>(endpoint),
     enabled,
     staleTime: 30_000,
@@ -102,9 +104,18 @@ export function BrowserEnvironmentControls({
                   : info
                     ? '未安装'
                     : '检测失败'}
+          {info?.installed && info.version && ` · Playwright ${info.version}`}
+          {info?.installed &&
+            typeof info.revision === 'number' &&
+            ` · r${info.revision}`}
           {info?.os &&
             ` · ${info.os === 'ubuntu' ? 'Ubuntu' : info.os === 'debian' ? 'Debian' : info.os} ${info.os_version || ''}`}
         </p>
+        {info?.needs_upgrade && (
+          <p className='text-amber-600'>
+            更新主程序后，旧槽位仍需点击“升级浏览器环境”安装图形运行包；会话资料会保留。
+          </p>
+        )}
         {info?.supported === false && (
           <p className='text-amber-600'>
             当前支持 Ubuntu 22.04 / 24.04、Debian 12 / 13 的标准 Python

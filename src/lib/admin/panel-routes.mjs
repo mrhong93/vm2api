@@ -5735,11 +5735,13 @@ export function createPanelHandler(ctx) {
         // transparent traffic keeps the old exit.
         let egress = null
         if (
-          (result.domain_forward_changed || result.connection_changed) &&
+          (result.domain_forward_changed || result.connection_changed || Object.hasOwn(patch, 'domain_forward')) &&
           egressEnabled() &&
           process.env.KIN_CRS_MOCK !== '1' &&
           (result.proxy.bound_vm_ids || []).length
         ) {
+          // Reapplying the same flag must also retry a previously failed helper
+          // start. ensureProxyEgress reuses a healthy matching process.
           const restarted = await ensureProxyEgress(cfg.paths.project, proxyPool.getProxyByIdWithAuth(id))
           egress = { ok: !!restarted.ok, error: restarted.ok ? null : restarted.error || 'egress_restart_failed' }
         }
